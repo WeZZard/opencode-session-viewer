@@ -106,14 +106,18 @@ function duplicateIdsFrom(ids) {
 }
 
 function hasAlignedConnector(connector) {
+  const resolvedWithoutOverlap =
+    connector.alignmentStatus === "clamped" &&
+    connector.firstMessageTopDelta >= 0;
+
   return (
     connector.sourceMessageExists &&
     connector.spawnPromptExists &&
     connector.firstMessageExists &&
-    connector.alignmentStatus === "aligned" &&
+    (connector.alignmentStatus === "aligned" || resolvedWithoutOverlap) &&
     connector.connectorHeight > 0 &&
     connector.alignmentConnectorHeight > 0 &&
-    Math.abs(connector.firstMessageTopDelta) < 1
+    (resolvedWithoutOverlap || Math.abs(connector.firstMessageTopDelta) < 1)
   );
 }
 
@@ -126,6 +130,20 @@ async function readIdentityState(page, selector) {
     const activeRows = Array.from(
       document.querySelectorAll(".message-item.active"),
     );
+    const rectOf = (el) => {
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      return {
+        width: rect.width,
+        height: rect.height,
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+      };
+    };
+    const scrollRangeOf = (el) =>
+      el ? Math.max(0, el.scrollHeight - el.clientHeight) : null;
     return {
       duplicateIds: Array.from(
         new Set(ids.filter((id, index) => ids.indexOf(id) !== index)),
@@ -176,18 +194,19 @@ async function readIdentityState(page, selector) {
         panelTrackIds: Array.from(
           document.querySelectorAll(".subagent-panel"),
         ).map((track) => track.dataset.agentId || null),
+        wrapperRect: rectOf(document.querySelector(".main-wrapper")),
+        mainContentRect: rectOf(document.getElementById("mainContent")),
         mainRect: (() => {
           const main = document.querySelector(".agent-main-stream");
-          if (!main) return null;
-          const rect = main.getBoundingClientRect();
-          return { width: rect.width, left: rect.left, right: rect.right };
+          return rectOf(main);
         })(),
         overlayRect: (() => {
           const overlay = document.getElementById("subagentPanelOverlay");
-          if (!overlay) return null;
-          const rect = overlay.getBoundingClientRect();
-          return { width: rect.width, left: rect.left, right: rect.right };
+          return rectOf(overlay);
         })(),
+        panelRects: Array.from(
+          document.querySelectorAll(".subagent-panel"),
+        ).map((panel) => rectOf(panel)),
         rackScrollLeft:
           document.getElementById("subagentPanelRack")?.scrollLeft ?? null,
         rackClientWidth:
@@ -205,6 +224,51 @@ async function readIdentityState(page, selector) {
         panelWidths: Array.from(
           document.querySelectorAll(".subagent-panel"),
         ).map((panel) => panel.getBoundingClientRect().width),
+        scrollRanges: [
+          {
+            agentId: "main",
+            range: scrollRangeOf(document.getElementById("mainContent")),
+          },
+          ...Array.from(document.querySelectorAll(".subagent-panel")).map(
+            (panel) => ({
+              agentId: panel.dataset.agentId || null,
+              range: scrollRangeOf(panel),
+            }),
+          ),
+        ],
+        streamHeightSpacers: Array.from(
+          document.querySelectorAll(".agent-stream-height-spacer"),
+        ).map((spacer) => ({
+          agentId: spacer.dataset.agentId || null,
+          height: spacer.getBoundingClientRect().height,
+          spacerPx: Number(spacer.dataset.streamHeightSpacerPx || 0),
+          unifiedRange: Number(spacer.dataset.unifiedScrollRangePx || 0),
+        })),
+        connectorPlacements: Array.from(
+          document.querySelectorAll(".agent-connector"),
+        ).map((connector) => {
+          const track = connector.closest(".agent-track");
+          const header = connector.closest(".agent-track-header");
+          const body = track?.querySelector(":scope > .agent-track-body");
+          const firstMessage = document.getElementById(
+            connector.dataset.firstMessageId || "",
+          );
+          const connectorRect = rectOf(connector);
+          const bodyRect = rectOf(body);
+          const firstRect = rectOf(firstMessage);
+          return {
+            subagentId: connector.dataset.subagentId || null,
+            insideHeader: Boolean(header),
+            insideBody: Boolean(connector.closest(".agent-track-body")),
+            connectorBottom: connectorRect?.bottom ?? null,
+            bodyTop: bodyRect?.top ?? null,
+            firstMessageTop: firstRect?.top ?? null,
+            overlapsFirstMessage:
+              connectorRect && firstRect
+                ? connectorRect.bottom > firstRect.top
+                : null,
+          };
+        }),
       },
       selectedAgentChips: Array.from(
         document.querySelectorAll(".selected-agent-chip"),
@@ -562,6 +626,21 @@ async function verifyAgentStreamPresentation(browser) {
   });
 
   const initialState = await readIdentityState(page, ".message-item");
+  const rectCenter = (rect) => (rect.left + rect.right) / 2;
+  const nearlyEqual = (left, right, tolerance = 1) =>
+    Math.abs(left - right) <= tolerance;
+  assert(
+    initialState.workspace.mainStreamCount === 1 &&
+      initialState.workspace.subagentPanelCount === 0 &&
+      nearlyEqual(
+        rectCenter(initialState.workspace.mainRect),
+        rectCenter(initialState.workspace.mainContentRect),
+        1,
+      ),
+    "initial main agent stream should be centered when no subagent panels are open",
+    initialState,
+  );
+
   const firstOption = page
     .locator(
       '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option[data-track-kind="subagent"]',
@@ -575,6 +654,22 @@ async function verifyAgentStreamPresentation(browser) {
   const firstAgentId = await firstOption.getAttribute("data-agent-id");
   const secondAgentId = await secondOption.getAttribute("data-agent-id");
   await firstOption.click();
+  await page.waitForTimeout(100);
+  const firstOpenState = await readIdentityState(page, ".message-item");
+  assert(
+    firstOpenState.workspace.subagentPanelCount === 1 &&
+      firstOpenState.workspace.panelTrackIds[0] === firstAgentId &&
+      firstOpenState.workspace.mainContentRect.width <
+        initialState.workspace.mainContentRect.width &&
+      nearlyEqual(
+        firstOpenState.workspace.panelRects[0].right,
+        firstOpenState.workspace.overlayRect.right,
+        1,
+      ),
+    "first opened subagent should consume right-side layout space at the right edge",
+    { initialState, firstOpenState },
+  );
+
   await secondOption.click();
   await page.waitForTimeout(100);
 
@@ -588,20 +683,38 @@ async function verifyAgentStreamPresentation(browser) {
       openedState.workspace.mainTrackIds[0] === "main" &&
       openedState.workspace.panelTrackIds.includes(firstAgentId) &&
       openedState.workspace.panelTrackIds.includes(secondAgentId),
-    "clicking multiple subagents should keep main stream and open floating right panels",
+    "clicking multiple subagents should keep main stream and open right-side panels",
     openedState,
   );
   assert(
-    Math.abs(
-      openedState.workspace.mainRect.width -
-        initialState.workspace.mainRect.width,
-    ) < 1,
-    "floating subagent panels should not horizontally collapse the main stream",
-    { initialState, openedState },
+    openedState.workspace.mainContentRect.width <
+      firstOpenState.workspace.mainContentRect.width &&
+      openedState.workspace.panelTrackIds[0] === firstAgentId &&
+      openedState.workspace.panelTrackIds[1] === secondAgentId &&
+      openedState.workspace.panelRects[0].left <
+        firstOpenState.workspace.panelRects[0].left &&
+      nearlyEqual(
+        openedState.workspace.panelRects[1].right,
+        openedState.workspace.overlayRect.right,
+        3,
+      ),
+    "opening a second subagent should append it on the right and push the first panel left",
+    { firstOpenState, openedState },
   );
   assert(
     openedState.workspace.panelWidths.every((width) => width <= 522),
-    "floating subagent panels should respect the configured maximum width",
+    "subagent panels should respect the configured maximum width",
+    openedState,
+  );
+  assert(
+    openedState.workspace.connectorPlacements.length === 2 &&
+      openedState.workspace.connectorPlacements.every(
+        (connector) =>
+          connector.insideHeader &&
+          !connector.insideBody &&
+          connector.connectorBottom <= connector.bodyTop + 1,
+      ),
+    "subagent relationship controls should live in the header above the message body layout space",
     openedState,
   );
   assert(
@@ -667,12 +780,12 @@ async function verifyAgentStreamPresentation(browser) {
     manyPanelsState,
   );
   assert(
-    Math.abs(
-      manyPanelsState.workspace.mainRect.width -
+    manyPanelsState.workspace.mainContentRect.width <=
+      openedState.workspace.mainContentRect.width + 1 &&
+      manyPanelsState.workspace.mainRect.width <
         initialState.workspace.mainRect.width,
-    ) < 1,
-    "opening many floating panels should not collapse the main stream",
-    { initialState, manyPanelsState },
+    "opening many right-side panels should shrink the main content area and reflow the main stream",
+    { initialState, openedState, manyPanelsState },
   );
   assert(
     manyPanelsState.workspace.panelWidths.every((width) => width <= 522),
@@ -692,6 +805,20 @@ async function verifyAgentStreamPresentation(browser) {
   });
   await page.waitForTimeout(100);
   const syncedScrollState = await readIdentityState(page, ".message-item");
+  const scrollRanges = syncedScrollState.workspace.scrollRanges.map(
+    (entry) => entry.range,
+  );
+  const maxScrollRange = Math.max(...scrollRanges);
+  assert(
+    scrollRanges.length === 9 &&
+      scrollRanges.every((range) => Math.abs(range - maxScrollRange) <= 1) &&
+      syncedScrollState.workspace.streamHeightSpacers.length === 9 &&
+      syncedScrollState.workspace.streamHeightSpacers.every(
+        (spacer) => Math.abs(spacer.unifiedRange - maxScrollRange) <= 1,
+      ),
+    "active agent streams should share the tallest stream's scrollable height",
+    syncedScrollState,
+  );
   assert(
     syncedScrollState.workspace.panelScrollTops.length === 8 &&
       syncedScrollState.workspace.panelScrollTops.every(
@@ -905,7 +1032,9 @@ async function verifyRepeatedTopLevelTranscript(browser) {
   assert(
     state.alignmentSpacers.length === 1 &&
       state.alignmentSpacers.every(
-        (spacer) => spacer.status === "aligned" && spacer.connectorHeight > 0,
+        (spacer) =>
+          ["aligned", "clamped"].includes(spacer.status) &&
+          spacer.connectorHeight > 0,
       ),
     "top-level opened subagent panel did not record connector-aware alignment spacers",
     state,
@@ -1085,7 +1214,9 @@ async function verifyRepeatedNestedTranscript(browser) {
   assert(
     state.alignmentSpacers.length === 2 &&
       state.alignmentSpacers.every(
-        (spacer) => spacer.status === "aligned" && spacer.connectorHeight > 0,
+        (spacer) =>
+          ["aligned", "clamped"].includes(spacer.status) &&
+          spacer.connectorHeight > 0,
       ),
     "nested subagent tracks did not record connector-aware alignment spacers",
     state,
@@ -1315,7 +1446,9 @@ async function verifyConnectorAlignmentAfterExpansion(browser) {
   );
   assert(
     afterExpansion.alignmentSpacers.every(
-      (spacer) => spacer.status === "aligned" && spacer.connectorHeight > 0,
+      (spacer) =>
+        ["aligned", "clamped"].includes(spacer.status) &&
+        spacer.connectorHeight > 0,
     ),
     "alignment spacers should record connector-aware measurements after expansion",
     afterExpansion,

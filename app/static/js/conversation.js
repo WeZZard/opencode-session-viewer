@@ -15,8 +15,10 @@ let selectedAgentId = "main";
 const openSubagentPanelIds = new Set();
 const expandedToolResults = new Set();
 let alignmentFrame = null;
+let streamHeightFrame = null;
 let sidebarAgentFilterScrollLeft = 0;
 let isSyncingAgentScroll = false;
+let layoutResizeListenerBound = false;
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -1968,9 +1970,10 @@ function renderAgentTrack(track, activeSearch, options = {}) {
   return `
         <section class="${trackClasses}" id="agent-track-${domId(track.id)}" data-agent-id="${escAttr(track.id)}" data-track-kind="${escAttr(track.kind)}" data-panel-open="${isPanel ? "true" : "false"}">
             <div class="agent-track-header">
-                <div>
+                <div class="agent-track-heading">
                     <div class="agent-track-kicker">${track.kind === "main" ? "main agent" : track.unlinked ? "unlinked subagent" : "subagent"}</div>
                     <div class="agent-track-title">${esc(title)}</div>
+                    ${renderAgentConnector(track)}
                 </div>
                 <div class="agent-track-actions">
                     ${track.kind === "subagent" && model ? `<div class="agent-track-model" data-track-model="${escAttr(model)}">${esc(model)}</div>` : ""}
@@ -1978,9 +1981,9 @@ function renderAgentTrack(track, activeSearch, options = {}) {
                     ${isPanel ? `<button type="button" class="agent-panel-close" aria-label="Close ${escAttr(title)}" onclick="closeSubagentPanel('${escAttr(track.id)}', event)">×</button>` : ""}
                 </div>
             </div>
-            ${renderAgentConnector(track)}
             <div class="agent-track-body">
                 ${visibleMessages ? renderAlignmentSpacer(track) + visibleMessages : '<div class="agent-track-empty">No messages match the current filters.</div>'}
+                <div class="agent-stream-height-spacer" data-agent-id="${escAttr(track.id)}" aria-hidden="true"></div>
             </div>
         </section>
     `;
@@ -1996,6 +1999,7 @@ function alignSubagentTracks() {
     spacer.dataset.alignmentOffsetPx = "0";
     spacer.dataset.alignmentStatus = "pending";
     spacer.classList.remove("unlinked");
+    spacer.classList.remove("clamped");
   });
 
   // Force layout after resetting heights so nested tracks measure parent
@@ -2010,7 +2014,7 @@ function alignSubagentTracks() {
       );
       if (!spacer) return;
 
-      const connector = track.querySelector(":scope > .agent-connector");
+      const connector = track.querySelector(".agent-connector");
       const parentMessageId = connector?.dataset.sourceMessageId || "";
       const firstMessageId = connector?.dataset.firstMessageId || "";
       const parentMessage = document.getElementById(parentMessageId);
@@ -2030,12 +2034,14 @@ function alignSubagentTracks() {
       if (offsetPx >= 0) {
         spacer.style.height = `${offsetPx.toFixed(1)}px`;
         spacer.style.marginTop = "0px";
+        spacer.dataset.alignmentStatus = "aligned";
       } else {
         spacer.style.height = "0px";
-        spacer.style.marginTop = `${offsetPx.toFixed(1)}px`;
+        spacer.style.marginTop = "0px";
+        spacer.dataset.alignmentStatus = "clamped";
+        spacer.classList.add("clamped");
       }
       spacer.dataset.alignmentOffsetPx = offsetPx.toFixed(1);
-      spacer.dataset.alignmentStatus = "aligned";
       spacer.dataset.connectorHeightPx = connectorHeight.toFixed(1);
       spacer.dataset.parentMessageId = parentMessageId;
       spacer.dataset.firstMessageId = firstMessageId;
@@ -2050,6 +2056,72 @@ function scheduleSubagentAlignment() {
   alignmentFrame = requestAnimationFrame(() => {
     alignmentFrame = null;
     alignSubagentTracks();
+    scheduleAgentStreamHeightSync();
+  });
+}
+
+function getAgentStreamScrollTargets() {
+  const mainContent = document.getElementById("mainContent");
+  const mainTrack = document.querySelector(".agent-main-stream");
+  const targets = [];
+
+  if (mainContent && mainTrack) {
+    targets.push({ scrollElement: mainContent, track: mainTrack });
+  }
+
+  getSubagentPanelElements().forEach((panel) => {
+    targets.push({ scrollElement: panel, track: panel });
+  });
+
+  return targets;
+}
+
+function syncAgentStreamHeights() {
+  const spacers = Array.from(
+    document.querySelectorAll(".agent-stream-height-spacer"),
+  );
+  spacers.forEach((spacer) => {
+    spacer.style.height = "0px";
+    spacer.dataset.streamHeightSpacerPx = "0";
+    spacer.dataset.unifiedScrollRangePx = "0";
+  });
+
+  void document.body.offsetHeight;
+
+  const targets = getAgentStreamScrollTargets();
+  if (!targets.length) return;
+
+  const maxScrollRange = Math.max(
+    0,
+    ...targets.map(({ scrollElement }) =>
+      Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight),
+    ),
+  );
+
+  targets.forEach(({ scrollElement, track }) => {
+    const spacer = track.querySelector(".agent-stream-height-spacer");
+    if (!spacer) return;
+
+    const currentRange = Math.max(
+      0,
+      scrollElement.scrollHeight - scrollElement.clientHeight,
+    );
+    const missingRange = Math.max(0, maxScrollRange - currentRange);
+    spacer.style.height = `${missingRange.toFixed(1)}px`;
+    spacer.dataset.streamHeightSpacerPx = missingRange.toFixed(1);
+    spacer.dataset.unifiedScrollRangePx = maxScrollRange.toFixed(1);
+  });
+}
+
+function scheduleAgentStreamHeightSync() {
+  if (streamHeightFrame !== null) {
+    cancelAnimationFrame(streamHeightFrame);
+  }
+
+  streamHeightFrame = requestAnimationFrame(() => {
+    streamHeightFrame = null;
+    syncAgentStreamHeights();
+    syncSubagentPanelsToMain();
   });
 }
 
@@ -2062,13 +2134,50 @@ function syncSubagentPanelsToMain() {
   if (!mainContent || isSyncingAgentScroll) return;
 
   isSyncingAgentScroll = true;
-  const nextScrollTop = mainContent.scrollTop;
-  getSubagentPanelElements().forEach((panel) => {
-    if (panel.scrollTop !== nextScrollTop) {
-      panel.scrollTop = nextScrollTop;
-    }
-  });
-  isSyncingAgentScroll = false;
+  try {
+    const nextScrollTop = mainContent.scrollTop;
+    getSubagentPanelElements().forEach((panel) => {
+      if (panel.scrollTop !== nextScrollTop) {
+        panel.scrollTop = nextScrollTop;
+      }
+    });
+  } finally {
+    isSyncingAgentScroll = false;
+  }
+}
+
+function updateSubagentPanelOverlayWidth(overlay, openPanelCount) {
+  const wrapper = overlay.closest(".main-wrapper");
+  const wrapperWidth = wrapper?.clientWidth || overlay.clientWidth || 0;
+  const styles = window.getComputedStyle(wrapper || overlay);
+  const panelWidth =
+    parseFloat(styles.getPropertyValue("--subagent-panel-width")) || 520;
+  const panelMinWidth =
+    parseFloat(styles.getPropertyValue("--subagent-panel-min-width")) || 320;
+  const panelGap =
+    parseFloat(styles.getPropertyValue("--agent-stream-panel-gap")) || 16;
+  const mainMinWidth =
+    parseFloat(styles.getPropertyValue("--main-stream-min-width")) || 420;
+
+  if (!openPanelCount || !wrapperWidth) {
+    overlay.style.setProperty("--subagent-panel-rack-width", "0px");
+    return;
+  }
+
+  const targetWidth =
+    openPanelCount * panelWidth + Math.max(0, openPanelCount - 1) * panelGap;
+  const maxWidth = Math.min(
+    wrapperWidth * 0.72,
+    Math.max(panelMinWidth, wrapperWidth - mainMinWidth - panelGap),
+  );
+  const nextWidth = Math.min(
+    maxWidth,
+    Math.max(Math.min(panelMinWidth, maxWidth), targetWidth),
+  );
+  overlay.style.setProperty(
+    "--subagent-panel-rack-width",
+    `${nextWidth.toFixed(1)}px`,
+  );
 }
 
 function renderFloatingSubagentPanels(openSubagentTracks, activeSearch) {
@@ -2076,6 +2185,8 @@ function renderFloatingSubagentPanels(openSubagentTracks, activeSearch) {
   if (!overlay) return;
 
   overlay.dataset.openPanelCount = String(openSubagentTracks.length);
+  overlay.style.setProperty("--open-panel-count", openSubagentTracks.length);
+  updateSubagentPanelOverlayWidth(overlay, openSubagentTracks.length);
   if (!openSubagentTracks.length) {
     overlay.innerHTML = "";
     return;
@@ -2089,7 +2200,25 @@ function renderFloatingSubagentPanels(openSubagentTracks, activeSearch) {
             ${panelsHtml}
         </div>
     `;
-  syncSubagentPanelsToMain();
+  requestAnimationFrame(() => {
+    updateSubagentPanelOverlayWidth(overlay, openSubagentTracks.length);
+    const rack = document.getElementById("subagentPanelRack");
+    if (rack) {
+      rack.scrollLeft = Math.max(0, rack.scrollWidth - rack.clientWidth);
+    }
+    syncSubagentPanelsToMain();
+  });
+}
+
+function refreshResponsiveAgentLayout() {
+  const overlay = document.getElementById("subagentPanelOverlay");
+  if (!overlay) return;
+
+  updateSubagentPanelOverlayWidth(
+    overlay,
+    Number(overlay.dataset.openPanelCount || 0),
+  );
+  scheduleSubagentAlignment();
 }
 
 // Render timeline
@@ -2176,6 +2305,12 @@ function loadData(data) {
 
   // Add scroll listener
   const mainContent = document.getElementById("mainContent");
+  if (!layoutResizeListenerBound) {
+    layoutResizeListenerBound = true;
+    window.addEventListener("resize", refreshResponsiveAgentLayout, {
+      passive: true,
+    });
+  }
   mainContent.addEventListener("scroll", syncSubagentPanelsToMain, {
     passive: true,
   });
