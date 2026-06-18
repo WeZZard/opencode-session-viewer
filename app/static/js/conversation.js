@@ -11,6 +11,7 @@ let maxTokens = { input: 1, output: 1, cache: 1 };
 let currentMessageIndex = 0;
 let urlSearchQuery = ""; // Search query from URL (for highlighting)
 let sidebarNavigationLock = null;
+let selectedAgentId = "main";
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -171,8 +172,18 @@ function getSubagentMessageDomId(subagentPath, subagentIndex) {
   return `submsg-${domId(subagentPath)}-${subagentIndex}`;
 }
 
+function getAgentMessageDomId(agentId, messageIndex) {
+  return agentId === "main"
+    ? `msg-${messageIndex}`
+    : getSubagentMessageDomId(agentId, messageIndex);
+}
+
 function getActivityDomId(activityPath) {
   return `activity-${domId(activityPath)}`;
+}
+
+function getSpawnPromptDomId(subagentPath) {
+  return `spawn-prompt-${domId(subagentPath)}`;
 }
 
 function getToolOccurrenceSegment(part, partIndex) {
@@ -249,6 +260,152 @@ function getMessageSubagentTranscripts(
     transcripts.push(transcript);
   });
   return transcripts;
+}
+
+function getAgentTitle(track) {
+  if (!track) return "Agent";
+  if (track.id === "main") return "Main agent";
+  return (
+    track.transcript?.summary?.title ||
+    track.transcript?.summary?.id ||
+    "Subagent"
+  );
+}
+
+function getAgentTracks() {
+  if (!SESSION_DATA) return [];
+
+  const tracks = [
+    {
+      id: "main",
+      kind: "main",
+      title: "Main agent",
+      agent: "main",
+      messages: SESSION_DATA.messages || [],
+      subagents: SESSION_DATA.subagent_transcripts || [],
+      parentIndex: null,
+      parentAgentId: "",
+      sourceMessageIndex: null,
+      sourcePartIndex: null,
+      sourcePartId: "",
+      pathSegments: [],
+      transcript: null,
+      spawnPrompt: "",
+    },
+  ];
+  const seenTranscriptKeys = new Set();
+  const topSubagents = SESSION_DATA.subagent_transcripts || [];
+
+  (SESSION_DATA.messages || []).forEach((msg, messageIndex) => {
+    getMessageSubagentTranscriptRefs(msg, topSubagents).forEach(
+      ({ part, partIndex, transcript }) => {
+        collectAgentTrack(tracks, seenTranscriptKeys, transcript, {
+          parentIndex: messageIndex,
+          parentAgentId: "main",
+          sourceMessageIndex: messageIndex,
+          sourcePartIndex: partIndex,
+          sourcePartId: part?.id || "",
+          pathSegments: [
+            getSubagentOccurrenceSegment(part, transcript, partIndex),
+          ],
+          parentActivityPath: "",
+          spawnPrompt: getTaskPrompt(part),
+        });
+      },
+    );
+  });
+
+  topSubagents.forEach((transcript, index) => {
+    const key =
+      transcript.summary?.id || transcript.task_part_id || `orphan-${index}`;
+    if (seenTranscriptKeys.has(key)) return;
+    collectAgentTrack(tracks, seenTranscriptKeys, transcript, {
+      parentIndex: SESSION_DATA.messages.length + index,
+      parentAgentId: "main",
+      sourceMessageIndex: null,
+      sourcePartIndex: null,
+      sourcePartId: transcript.task_part_id || "",
+      pathSegments: [`unlinked-${key}`],
+      parentActivityPath: "",
+      spawnPrompt: "",
+      unlinked: true,
+    });
+  });
+
+  return tracks;
+}
+
+function collectAgentTrack(tracks, seenTranscriptKeys, transcript, context) {
+  const id = getSubagentOccurrencePath(
+    context.parentIndex,
+    context.pathSegments,
+  );
+  const transcriptKey =
+    transcript.summary?.id ||
+    transcript.task_part_id ||
+    id ||
+    `track-${tracks.length}`;
+  seenTranscriptKeys.add(transcriptKey);
+
+  const track = {
+    id,
+    kind: "subagent",
+    title: transcript.summary?.title || transcript.summary?.id || "Subagent",
+    agent: transcript.agent_type || transcript.summary?.model || "subagent",
+    messages: transcript.messages || [],
+    subagents: transcript.subagent_transcripts || [],
+    parentIndex: context.parentIndex,
+    parentAgentId: context.parentAgentId,
+    parentActivityPath: context.parentActivityPath || "",
+    sourceMessageIndex: context.sourceMessageIndex,
+    sourcePartIndex: context.sourcePartIndex,
+    sourcePartId: context.sourcePartId || "",
+    pathSegments: context.pathSegments,
+    transcript,
+    spawnPrompt: context.spawnPrompt || "",
+    unlinked: Boolean(context.unlinked),
+  };
+  tracks.push(track);
+
+  (transcript.messages || []).forEach((msg, messageIndex) => {
+    getMessageSubagentTranscriptRefs(
+      msg,
+      transcript.subagent_transcripts || [],
+    ).forEach(({ part, partIndex, transcript: childTranscript }) => {
+      collectAgentTrack(tracks, seenTranscriptKeys, childTranscript, {
+        parentIndex: context.parentIndex,
+        parentAgentId: id,
+        parentActivityPath: id,
+        sourceMessageIndex: messageIndex,
+        sourcePartIndex: partIndex,
+        sourcePartId: part?.id || "",
+        pathSegments: [
+          ...context.pathSegments,
+          `msg${messageIndex}`,
+          getSubagentOccurrenceSegment(part, childTranscript, partIndex),
+        ],
+        spawnPrompt: getTaskPrompt(part),
+      });
+    });
+  });
+}
+
+function getSelectedAgentTrack() {
+  const tracks = getAgentTracks();
+  return tracks.find((track) => track.id === selectedAgentId) || tracks[0];
+}
+
+function ensureSelectedAgentTrack(tracks = getAgentTracks()) {
+  if (!tracks.length) return null;
+  const selected = tracks.find((track) => track.id === selectedAgentId);
+  if (selected) return selected;
+  selectedAgentId = "main";
+  return tracks.find((track) => track.id === "main") || tracks[0];
+}
+
+function getTaskPrompt(part) {
+  const input = part?.state?.input || {};
+  return input.prompt || input.description || part?.state?.title || "";
 }
 
 function messageHasSubagentTranscript(
@@ -513,33 +670,20 @@ function renderSparkline() {
     `;
 }
 
-// Scroll to message
-function setActiveSidebarMessage(idx) {
+function setActiveSidebarAgentMessage(agentId, messageIndex) {
   document.querySelectorAll(".message-item").forEach((item) => {
     item.classList.toggle(
       "active",
-      !item.dataset.subagentId &&
-        !item.dataset.activityPath &&
-        Number(item.dataset.index) === idx,
+      !item.dataset.activityPath &&
+        item.dataset.agentId === agentId &&
+        Number(item.dataset.messageIndex) === messageIndex,
     );
   });
 }
 
-function setActiveSidebarSubagent(
-  transcriptId,
-  subagentIndex,
-  parentIndex,
-  subagentPath,
-) {
-  document.querySelectorAll(".message-item").forEach((item) => {
-    item.classList.toggle(
-      "active",
-      item.dataset.subagentId === transcriptId &&
-        Number(item.dataset.subagentIndex) === subagentIndex &&
-        Number(item.dataset.index) === parentIndex &&
-        item.dataset.subagentPath === subagentPath,
-    );
-  });
+// Scroll to message
+function setActiveSidebarMessage(idx) {
+  setActiveSidebarAgentMessage("main", idx);
 }
 
 function setActiveSidebarActivity(activityPath) {
@@ -561,25 +705,52 @@ function clearHighlightedTargets() {
     .forEach((el) => el.classList.remove("highlighted"));
 }
 
-function scrollToMessage(idx) {
-  const el = document.getElementById("msg-" + idx);
-  if (el) {
-    sidebarNavigationLock = { kind: "message", index: idx };
+function scrollToDomId(targetId, lock = null) {
+  const el = document.getElementById(targetId);
+  if (!el) return;
 
-    clearHighlightedTargets();
+  sidebarNavigationLock = lock;
+  clearHighlightedTargets();
 
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
-    el.classList.add("highlighted");
-    highlightedId = idx;
+  el.scrollIntoView({ behavior: "smooth", block: "start", inline: "center" });
+  el.classList.add("highlighted");
 
-    setActiveSidebarMessage(idx);
+  setTimeout(() => {
+    el.classList.remove("highlighted");
+  }, 2000);
+}
 
-    updateViz(idx);
+function scrollToAgentMessage(agentId, messageIndex) {
+  const tracks = getAgentTracks();
+  const track = tracks.find((candidate) => candidate.id === agentId);
+  if (!track) return;
 
-    setTimeout(() => {
-      el.classList.remove("highlighted");
-    }, 2000);
+  if (selectedAgentId !== agentId) {
+    selectedAgentId = agentId;
+    sidebarNavigationLock = null;
+    renderSidebar();
+    renderTimeline();
+    requestAnimationFrame(() => scrollToAgentMessage(agentId, messageIndex));
+    return;
   }
+
+  const el = document.getElementById(
+    getAgentMessageDomId(agentId, messageIndex),
+  );
+  if (!el) return;
+
+  scrollToDomId(getAgentMessageDomId(agentId, messageIndex), {
+    kind: "agent-message",
+    agentId,
+    messageIndex,
+  });
+  highlightedId = track.id === "main" ? messageIndex : track.parentIndex;
+  setActiveSidebarAgentMessage(agentId, messageIndex);
+  updateViz(track.id === "main" ? messageIndex : track.parentIndex || 0);
+}
+
+function scrollToMessage(idx) {
+  scrollToAgentMessage("main", idx);
 }
 
 function scrollToSubagentMessage(
@@ -588,41 +759,7 @@ function scrollToSubagentMessage(
   parentIndex,
   subagentPath,
 ) {
-  const parentEl = document.getElementById("msg-" + parentIndex);
-  const activityEl = document.getElementById(getActivityDomId(subagentPath));
-  if (!parentEl && !activityEl) return;
-
-  sidebarNavigationLock = {
-    kind: "subagent",
-    transcriptId,
-    subagentIndex,
-    parentIndex,
-    subagentPath,
-  };
-
-  const childEl = document.getElementById(
-    getSubagentMessageDomId(subagentPath, subagentIndex),
-  );
-  const targetEl = childEl || activityEl || parentEl;
-
-  clearHighlightedTargets();
-
-  targetEl.scrollIntoView({ behavior: "smooth", block: "start" });
-  targetEl.classList.add("highlighted");
-  highlightedId = parentIndex;
-
-  setActiveSidebarSubagent(
-    transcriptId,
-    subagentIndex,
-    parentIndex,
-    subagentPath,
-  );
-
-  updateViz(parentIndex);
-
-  setTimeout(() => {
-    targetEl.classList.remove("highlighted");
-  }, 2000);
+  scrollToAgentMessage(subagentPath, subagentIndex);
 }
 
 function scrollToActivity(activityPath) {
@@ -650,25 +787,36 @@ function detectVisibleMessage() {
   const scrollTop = mainContent.scrollTop;
   const viewportHeight = mainContent.clientHeight;
   const viewportCenter = scrollTop + viewportHeight / 3;
+  const track = getSelectedAgentTrack();
+  if (!track) return;
 
-  let closestIdx = 0;
+  let closestIdx = currentMessageIndex;
   let closestDist = Infinity;
 
-  SESSION_DATA.messages.forEach((_, i) => {
-    const el = document.getElementById("msg-" + i);
-    if (el) {
+  document
+    .querySelectorAll(
+      `.agent-track[data-agent-id="${CSS.escape(track.id)}"] .agent-track-message`,
+    )
+    .forEach((el) => {
+      const messageIndex = Number(el.dataset.messageIndex);
       const elTop = el.offsetTop;
       const dist = Math.abs(elTop - viewportCenter);
       if (dist < closestDist) {
         closestDist = dist;
-        closestIdx = i;
+        closestIdx = messageIndex;
       }
-    }
-  });
+    });
 
-  if (closestIdx !== currentMessageIndex) {
+  if (closestDist === Infinity) return;
+
+  setActiveSidebarAgentMessage(track.id, closestIdx);
+  if (track.id === "main" && closestIdx !== currentMessageIndex) {
     updateViz(closestIdx);
-    setActiveSidebarMessage(closestIdx);
+  } else if (track.id !== "main") {
+    const parentIndex = track.parentIndex || 0;
+    if (parentIndex !== currentMessageIndex) {
+      updateViz(parentIndex);
+    }
   }
 }
 
@@ -812,6 +960,49 @@ function copyMarkdown(idx) {
 }
 
 // Render sidebar list
+function renderAgentFilter(location) {
+  const tracks = getAgentTracks();
+  if (!tracks.length) return "";
+  ensureSelectedAgentTrack(tracks);
+
+  return `
+        <div class="agent-filter" data-agent-filter-location="${escAttr(location)}" role="listbox" aria-label="Agent stream selector">
+            ${tracks
+              .map((track) => {
+                const active = track.id === selectedAgentId;
+                const count = track.messages.length;
+                return `
+                    <button type="button" class="agent-filter-option ${active ? "active" : ""}" role="option" aria-selected="${active ? "true" : "false"}" data-agent-id="${escAttr(track.id)}" data-track-kind="${escAttr(track.kind)}" onclick="selectAgentTrack(this.dataset.agentId)">
+                        <span class="agent-filter-kind">${track.kind === "main" ? "main" : "subagent"}</span>
+                        <span class="agent-filter-title">${esc(getAgentTitle(track))}</span>
+                        <span class="agent-filter-count">${count}</span>
+                    </button>
+                `;
+              })
+              .join("")}
+        </div>
+    `;
+}
+
+function selectAgentTrack(agentId) {
+  if (!agentId || selectedAgentId === agentId) return;
+  selectedAgentId = agentId;
+  sidebarNavigationLock = null;
+  renderSidebar();
+  renderTimeline();
+
+  requestAnimationFrame(() => {
+    const track = document.querySelector(
+      `.agent-track[data-agent-id="${CSS.escape(agentId)}"]`,
+    );
+    track?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+  });
+}
+
 function renderSidebar() {
   if (!SESSION_DATA) return;
 
@@ -820,52 +1011,47 @@ function renderSidebar() {
   const items = buildSidebarItems(activeSearch);
 
   const list = document.getElementById("messageList");
-  list.innerHTML = items
-    .map((item) => {
-      let previewHtml;
-      if (activeSearch) {
-        previewHtml = highlightText(
-          getSidebarMatchSnippet(item, activeSearch),
-          activeSearch,
-        );
-      } else {
-        previewHtml = esc(item.preview);
-      }
+  list.innerHTML =
+    renderAgentFilter("sidebar") +
+    items
+      .map((item) => {
+        let previewHtml;
+        if (activeSearch) {
+          previewHtml = highlightText(
+            getSidebarMatchSnippet(item, activeSearch),
+            activeSearch,
+          );
+        } else {
+          previewHtml = esc(item.preview);
+        }
 
-      const isSubagent = item.kind === "subagent";
-      const isTool = item.kind === "tool";
-      const itemClass = [
-        "message-item",
-        isSubagent ? "activity-entry subagent-entry" : "",
-        isTool ? "activity-entry tool-entry" : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      const clickHandler = isSubagent
-        ? "scrollToSubagentMessage(this.dataset.subagentId, Number(this.dataset.subagentIndex), Number(this.dataset.index), this.dataset.subagentPath)"
-        : isTool
+        const isTool = item.kind === "tool";
+        const itemClass = [
+          "message-item",
+          isTool ? "activity-entry tool-entry" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const clickHandler = isTool
           ? "scrollToActivity(this.dataset.activityPath)"
-          : `scrollToMessage(${item.index})`;
-      const dataAttrs = isSubagent
-        ? `data-index="${item.parentIndex}" data-subagent-id="${escAttr(item.transcriptId)}" data-subagent-index="${item.subagentIndex}" data-subagent-path="${escAttr(item.subagentPath)}"`
-        : isTool
-          ? `data-index="${item.parentIndex}" data-activity-path="${escAttr(item.activityPath)}" data-activity-kind="tool"`
-          : `data-index="${item.index}"`;
+          : "scrollToAgentMessage(this.dataset.agentId, Number(this.dataset.messageIndex))";
+        const dataAttrs = isTool
+          ? `data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.messageIndex}" data-index="${item.parentIndex}" data-activity-path="${escAttr(item.activityPath)}" data-activity-kind="tool"`
+          : `data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.index}" data-index="${item.parentIndex}"`;
 
-      return `
+        return `
                 <div class="${itemClass}" ${dataAttrs} onclick="${clickHandler}">
                     <div class="message-item-header">
                         <span class="role-badge ${item.role}">${item.role}</span>
-                        ${isSubagent ? `<span class="activity-mini-badge subagent">subagent</span>` : ""}
                         ${isTool ? `<span class="activity-mini-badge tool">tool</span>` : ""}
                         <span class="message-time">${formatTime(item.time)}</span>
                     </div>
-                    ${isSubagent || isTool ? `<div class="activity-context">${esc(item.context)}</div>` : ""}
+                    ${isTool ? `<div class="activity-context">${esc(item.context)}</div>` : ""}
                     <div class="message-preview">${previewHtml}</div>
                 </div>
             `;
-    })
-    .join("");
+      })
+      .join("");
 }
 
 // Update the filter clear button and label state
@@ -933,38 +1119,38 @@ function shouldShowMessageInTranscriptList(msg, activeSearch, subagents) {
 
 function buildSidebarItems(activeSearch) {
   const items = [];
-  const subagents = SESSION_DATA.subagent_transcripts || [];
+  const track = ensureSelectedAgentTrack();
+  if (!track) return items;
+  const subagents = track.subagents || [];
+  const agentTitle = getAgentTitle(track);
 
-  SESSION_DATA.messages.forEach((msg, index) => {
+  track.messages.forEach((msg, index) => {
     if (shouldShowMessageInTranscriptList(msg, activeSearch, subagents)) {
       items.push({
         kind: "message",
+        agentId: track.id,
         role: msg.role,
         time: msg.time_created,
         preview: getPreview(msg),
         text: getMessageSearchText(msg, subagents) || getPreview(msg),
         index,
+        parentIndex: track.id === "main" ? index : track.parentIndex || 0,
       });
     }
 
     collectToolSidebarItems(
       msg,
       {
-        parentIndex: index,
+        parentIndex: track.id === "main" ? index : track.parentIndex || 0,
+        agentId: track.id,
+        messageIndex: index,
         subagents,
-        subagentPathSegments: [],
-        context: `Message ${index + 1}`,
+        subagentPathSegments:
+          track.id === "main" ? [] : [...track.pathSegments, `msg${index}`],
+        context: `${agentTitle} · Message ${index + 1}`,
       },
       activeSearch,
       items,
-    );
-
-    getMessageSubagentTranscriptRefs(msg, subagents).forEach(
-      ({ part, partIndex, transcript }) => {
-        collectSubagentSidebarItems(transcript, index, activeSearch, items, [
-          getSubagentOccurrenceSegment(part, transcript, partIndex),
-        ]);
-      },
     );
   });
 
@@ -989,75 +1175,16 @@ function collectToolSidebarItems(msg, context, activeSearch, items) {
 
     items.push({
       kind: "tool",
+      agentId: context.agentId || "main",
       role: "tool",
       time: msg.time_created,
       preview: getToolPreview(part),
       text,
       parentIndex: context.parentIndex,
+      messageIndex: context.messageIndex ?? context.parentIndex,
       activityPath,
       context: context.context,
     });
-  });
-}
-
-function collectSubagentSidebarItems(
-  transcript,
-  parentIndex,
-  activeSearch,
-  items,
-  pathSegments = [],
-) {
-  const subagents = transcript.subagent_transcripts || [];
-  const transcriptId = transcript.summary?.id || "";
-  const subagentPath = getSubagentOccurrencePath(parentIndex, pathSegments);
-  const context =
-    transcript.summary?.title || transcript.agent_type || "Subagent transcript";
-
-  (transcript.messages || []).forEach((msg, subagentIndex) => {
-    if (!shouldShowMessageInTranscriptList(msg, activeSearch, subagents)) {
-      return;
-    }
-
-    items.push({
-      kind: "subagent",
-      role: msg.role,
-      time: msg.time_created,
-      preview: getPreview(msg),
-      text: getMessageSearchText(msg, subagents) || getPreview(msg),
-      parentIndex,
-      transcriptId,
-      subagentIndex,
-      subagentPath,
-      context,
-    });
-
-    getMessageSubagentTranscriptRefs(msg, subagents).forEach(
-      ({ part, partIndex, transcript: childTranscript }) => {
-        collectSubagentSidebarItems(
-          childTranscript,
-          parentIndex,
-          activeSearch,
-          items,
-          [
-            ...pathSegments,
-            `msg${subagentIndex}`,
-            getSubagentOccurrenceSegment(part, childTranscript, partIndex),
-          ],
-        );
-      },
-    );
-
-    collectToolSidebarItems(
-      msg,
-      {
-        parentIndex,
-        subagents,
-        subagentPathSegments: [...pathSegments, `msg${subagentIndex}`],
-        context,
-      },
-      activeSearch,
-      items,
-    );
   });
 }
 
@@ -1149,23 +1276,6 @@ function collectSubagentActivity(
     context.pathSegments,
   );
   const subagents = transcript.subagent_transcripts || [];
-  const transcriptText = getTranscriptText(transcript);
-  const hasMatch =
-    !activeSearch ||
-    transcriptText.toLowerCase().includes(activeSearch.toLowerCase());
-
-  if (hasMatch) {
-    activities.push({
-      kind: "subagent",
-      activityPath,
-      transcript,
-      parentIndex: context.parentIndex,
-      parentActivityPath: context.parentActivityPath || "",
-      sourcePartIndex: context.sourcePartIndex,
-      sourcePartId: context.sourcePartId || "",
-      pathSegments: context.pathSegments,
-    });
-  }
 
   (transcript.messages || []).forEach((msg, subagentIndex) => {
     const messagePathSegments = [
@@ -1215,17 +1325,14 @@ function renderActivityStream(activeSearch) {
         <section class="activity-stream" id="activityStream">
             <div class="activity-stream-header">
                 <div>
-                    <div class="activity-stream-title">Activity Stream</div>
-                    <div class="activity-stream-subtitle">${activities.length} related ${activities.length === 1 ? "activity" : "activities"}</div>
+                    <div class="activity-stream-title">Tool Results</div>
+                    <div class="activity-stream-subtitle">${activities.length} tool ${activities.length === 1 ? "result" : "results"}</div>
                 </div>
             </div>
             <div class="activity-stream-body">
                 ${activities
-                  .map((activity) =>
-                    activity.kind === "tool"
-                      ? renderToolActivity(activity)
-                      : renderSubagentActivity(activity),
-                  )
+                  .filter((activity) => activity.kind === "tool")
+                  .map((activity) => renderToolActivity(activity))
                   .join("")}
             </div>
         </section>
@@ -1249,13 +1356,6 @@ function getSidebarMatchSnippet(item, query) {
   return snippet;
 }
 
-function transcriptMatchesQuery(transcript, query) {
-  if (!query) return false;
-  return getTranscriptText(transcript)
-    .toLowerCase()
-    .includes(query.toLowerCase());
-}
-
 function renderActivityLink(activityPath, label) {
   if (!activityPath) return "";
   return `<button type="button" class="activity-link" onclick="scrollToActivity('${escAttr(activityPath)}')">${esc(label)}</button>`;
@@ -1266,7 +1366,8 @@ function renderToolActivityLink(activityPath) {
 }
 
 function renderSubagentActivityLink(activityPath) {
-  return renderActivityLink(activityPath, "subagent run");
+  if (!activityPath) return "";
+  return `<button type="button" class="activity-link" onclick="scrollToAgentMessage('${escAttr(activityPath)}', 0)">subagent stream</button>`;
 }
 
 function renderToolReference(part, context = {}) {
@@ -1281,9 +1382,12 @@ function renderToolReference(part, context = {}) {
     st.title || getToolPreview(part).replace(/^Tool \([^)]+\):?\s*/, "");
   const status =
     st.status || (st.error ? "error" : st.output ? "completed" : "");
+  const spawnAttrs = linkedSubagentPath
+    ? ` id="${getSpawnPromptDomId(linkedSubagentPath)}" data-spawns-agent-id="${escAttr(linkedSubagentPath)}"`
+    : "";
 
   return `
-        <div class="part part-activity-ref tool-ref" data-activity-path="${escAttr(activityPath)}" data-linked-subagent-path="${escAttr(linkedSubagentPath)}">
+        <div class="part part-activity-ref tool-ref"${spawnAttrs} data-activity-path="${escAttr(activityPath)}" data-linked-subagent-path="${escAttr(linkedSubagentPath)}">
             <div class="activity-ref-main">
                 <span class="activity-ref-kind">tool</span>
                 <span class="activity-ref-title">${esc(part.tool || "tool")}</span>
@@ -1353,50 +1457,6 @@ function renderToolSections(part) {
     `;
 }
 
-function renderSubagentActivity(activity) {
-  const transcript = activity.transcript;
-  const messages = transcript.messages || [];
-  const activeSearch = filterQuery || urlSearchQuery;
-  const title =
-    transcript.summary?.title || transcript.summary?.id || "Subagent";
-  const agent =
-    transcript.agent_type || transcript.summary?.model || "subagent";
-  const transcriptId = transcript.summary?.id || "";
-
-  const messagesHtml = messages
-    .map((msg, index) =>
-      renderSubagentMessage(
-        msg,
-        transcript,
-        index,
-        activity.parentIndex,
-        activity.pathSegments,
-      ),
-    )
-    .join("");
-
-  return `
-        <section class="activity-card subagent-transcript" id="${getActivityDomId(activity.activityPath)}" data-activity-kind="subagent" data-subagent-path="${escAttr(activity.activityPath)}" data-transcript-id="${escAttr(transcriptId)}" data-parent-message-index="${activity.parentIndex}" data-source-part-index="${activity.sourcePartIndex}" data-source-part-id="${escAttr(activity.sourcePartId)}" data-parent-activity-path="${escAttr(activity.parentActivityPath || "")}">
-            <div class="activity-card-header">
-                <div class="activity-title-row">
-                    <span class="activity-kind subagent">subagent</span>
-                    <span class="subagent-agent">${esc(agent)}</span>
-                    <span class="activity-title">${esc(title)}</span>
-                </div>
-                <span class="subagent-count">${messages.length} message${messages.length === 1 ? "" : "s"}</span>
-            </div>
-            <div class="activity-relation">
-                <span>spawned by message ${activity.parentIndex + 1}</span>
-                <span>part ${activity.sourcePartIndex + 1}</span>
-                ${activity.parentActivityPath ? `<span>parent ${esc(activity.parentActivityPath)}</span>` : ""}
-            </div>
-            <div class="activity-card-body subagent-transcript-body">
-                ${messagesHtml || '<div class="subagent-empty">No transcript messages recorded.</div>'}
-            </div>
-        </section>
-    `;
-}
-
 function renderToolActivity(activity) {
   const part = activity.part;
   const st = part.state || {};
@@ -1425,45 +1485,6 @@ function renderToolActivity(activity) {
                 ${renderToolSections(part) || '<div class="subagent-empty">No tool result recorded.</div>'}
             </div>
         </section>
-    `;
-}
-
-function renderSubagentMessage(
-  msg,
-  transcript,
-  index,
-  parentIndex,
-  pathSegments,
-) {
-  const transcriptId = transcript.summary?.id || "";
-  const subagentPath = getSubagentOccurrencePath(parentIndex, pathSegments);
-  return `
-        <div class="subagent-message ${msg.role}" id="${getSubagentMessageDomId(subagentPath, index)}" data-transcript-id="${esc(transcriptId)}" data-subagent-index="${index}" data-parent-index="${parentIndex}" data-subagent-path="${esc(subagentPath)}">
-            <div class="subagent-message-header">
-                <span class="role-badge ${msg.role}">${msg.role}</span>
-                <span class="message-meta">
-                    <span>${formatFullTime(msg.time_created)}</span>
-                    ${msg.modelID ? `<span>${esc(msg.modelID)}</span>` : ""}
-                    ${msg.agent ? `<span>${esc(msg.agent)}</span>` : ""}
-                </span>
-            </div>
-            <div class="subagent-message-body">
-                ${
-                  (msg.parts || [])
-                    .map((p, partIndex) =>
-                      renderPart(p, {
-                        embedded: true,
-                        subagents: transcript.subagent_transcripts || [],
-                        parentIndex,
-                        partIndex,
-                        subagentPathSegments: [...pathSegments, `msg${index}`],
-                      }),
-                    )
-                    .join("") ||
-                  '<span style="color:var(--text-tertiary)">(no content)</span>'
-                }
-            </div>
-        </div>
     `;
 }
 
@@ -1512,55 +1533,141 @@ function renderPart(part, context = {}) {
   return "";
 }
 
+function renderAgentConnector(track) {
+  if (track.kind !== "subagent" || track.unlinked) return "";
+  if (
+    track.sourceMessageIndex === null ||
+    track.sourceMessageIndex === undefined
+  ) {
+    return "";
+  }
+
+  const parentAgentId = track.parentAgentId || "main";
+  const sourceMessageId = getAgentMessageDomId(
+    parentAgentId,
+    track.sourceMessageIndex,
+  );
+  const spawnPromptId = getSpawnPromptDomId(track.id);
+  const firstMessageId = track.messages.length
+    ? getAgentMessageDomId(track.id, 0)
+    : "";
+  const prompt = compactText(track.spawnPrompt || "Task prompt", 140);
+
+  return `
+        <div class="agent-connector" data-source-agent-id="${escAttr(parentAgentId)}" data-source-message-id="${escAttr(sourceMessageId)}" data-spawn-prompt-id="${escAttr(spawnPromptId)}" data-first-message-id="${escAttr(firstMessageId)}" data-subagent-id="${escAttr(track.id)}">
+            <button type="button" class="agent-connector-node" onclick="scrollToAgentMessage('${escAttr(parentAgentId)}', ${track.sourceMessageIndex})">
+                <span class="agent-connector-label">parent message</span>
+                <span class="agent-connector-value">${track.sourceMessageIndex + 1}</span>
+            </button>
+            <button type="button" class="agent-connector-node prompt" onclick="scrollToDomId('${escAttr(spawnPromptId)}', { kind: 'spawn-prompt', agentId: '${escAttr(track.id)}' })">
+                <span class="agent-connector-label">spawn prompt</span>
+                <span class="agent-connector-value">${esc(prompt)}</span>
+            </button>
+            <button type="button" class="agent-connector-node" onclick="scrollToAgentMessage('${escAttr(track.id)}', 0)">
+                <span class="agent-connector-label">first message</span>
+                <span class="agent-connector-value">${track.messages.length ? "1" : "none"}</span>
+            </button>
+        </div>
+    `;
+}
+
+function renderAgentMessage(msg, track, messageIndex) {
+  const messageId = getAgentMessageDomId(track.id, messageIndex);
+  const parentIndex =
+    track.id === "main" ? messageIndex : track.parentIndex || 0;
+  const subagentPathSegments =
+    track.id === "main" ? [] : [...track.pathSegments, `msg${messageIndex}`];
+  const copyButton =
+    track.id === "main"
+      ? `
+                        <button class="copy-btn" onclick="copyMarkdown(${messageIndex})" title="Copy markdown to clipboard">
+                            <span>📋</span> Copy
+                        </button>
+        `
+      : "";
+
+  return `
+                <div class="message ${msg.role} agent-track-message" id="${messageId}" data-agent-id="${escAttr(track.id)}" data-message-index="${messageIndex}" data-parent-message-index="${parentIndex}">
+                    <div class="message-header">
+                        <div class="message-header-left">
+                            <span class="role-badge ${msg.role}">${msg.role}</span>
+                            <span class="message-meta">
+                                <span>${formatFullTime(msg.time_created)}</span>
+                                ${msg.modelID ? `<span>${esc(msg.modelID)}</span>` : ""}
+                                ${msg.agent ? `<span>${esc(msg.agent)}</span>` : ""}
+                            </span>
+                        </div>
+                        ${copyButton}
+                    </div>
+                    <div class="message-body">
+                        ${
+                          (msg.parts || [])
+                            .map((p, partIndex) =>
+                              renderPart(p, {
+                                subagents: track.subagents || [],
+                                parentIndex,
+                                agentId: track.id,
+                                messageIndex,
+                                partIndex,
+                                subagentPathSegments,
+                              }),
+                            )
+                            .join("") ||
+                          '<span style="color:var(--text-tertiary)">(no content)</span>'
+                        }
+                    </div>
+                </div>
+            `;
+}
+
+function renderAgentTrack(track, activeSearch) {
+  const subagents = track.subagents || [];
+  const visibleMessages = track.messages
+    .map((msg, index) =>
+      shouldShowMessageInTranscriptList(msg, activeSearch, subagents)
+        ? renderAgentMessage(msg, track, index)
+        : "",
+    )
+    .join("");
+  const active = track.id === selectedAgentId;
+  const title = getAgentTitle(track);
+
+  return `
+        <section class="agent-track ${active ? "active" : ""}" id="agent-track-${domId(track.id)}" data-agent-id="${escAttr(track.id)}" data-track-kind="${escAttr(track.kind)}">
+            <div class="agent-track-header">
+                <div>
+                    <div class="agent-track-kicker">${track.kind === "main" ? "main agent" : track.unlinked ? "unlinked subagent" : "subagent"}</div>
+                    <div class="agent-track-title">${esc(title)}</div>
+                </div>
+                <div class="agent-track-meta">${track.messages.length} message${track.messages.length === 1 ? "" : "s"}</div>
+            </div>
+            ${renderAgentConnector(track)}
+            <div class="agent-track-body">
+                ${visibleMessages || '<div class="agent-track-empty">No messages match the current filters.</div>'}
+            </div>
+        </section>
+    `;
+}
+
 // Render timeline
 function renderTimeline() {
   if (!SESSION_DATA) return;
 
   const activeSearch = filterQuery || urlSearchQuery;
   const timeline = document.getElementById("timeline");
-  const messagesHtml = SESSION_DATA.messages
-    .filter((m) => {
-      const subagents = SESSION_DATA.subagent_transcripts || [];
-      const hasSubagent = messageHasSubagentTranscript(m, subagents);
-      const matchesSearch = messageMatchesSearch(m, activeSearch, subagents);
-      if (
-        !showThinkingSteps &&
-        isThinkingStep(m) &&
-        !hasSubagent &&
-        !matchesSearch
-      ) {
-        return false;
-      }
-      return (
-        !/^\[.*?\]$/.test(getPreview(m).trim()) || hasSubagent || matchesSearch
-      );
-    })
-    .map((m, i) => {
-      // We need to use the original index to keep links working
-      const originalIdx = SESSION_DATA.messages.indexOf(m);
-      return `
-                <div class="message ${m.role}" id="msg-${originalIdx}">
-                    <div class="message-header">
-                        <div class="message-header-left">
-                            <span class="role-badge ${m.role}">${m.role}</span>
-                            <span class="message-meta">
-                                <span>${formatFullTime(m.time_created)}</span>
-                                ${m.modelID ? `<span>${m.modelID}</span>` : ""}
-                                ${m.agent ? `<span>${m.agent}</span>` : ""}
-                            </span>
-                        </div>
-                        <button class="copy-btn" onclick="copyMarkdown(${originalIdx})" title="Copy markdown to clipboard">
-                            <span>📋</span> Copy
-                        </button>
-                    </div>
-                    <div class="message-body">
-                        ${(m.parts || []).map((p, partIndex) => renderPart(p, { subagents: SESSION_DATA.subagent_transcripts || [], parentIndex: originalIdx, partIndex, subagentPathSegments: [] })).join("") || '<span style="color:var(--text-tertiary)">(no content)</span>'}
-                    </div>
-                </div>
-            `;
-    })
+  const tracks = getAgentTracks();
+  ensureSelectedAgentTrack(tracks);
+  const tracksHtml = tracks
+    .map((track) => renderAgentTrack(track, activeSearch))
     .join("");
-  timeline.innerHTML = messagesHtml + renderActivityStream(activeSearch);
+
+  timeline.innerHTML = `
+        ${renderAgentFilter("main")}
+        <div class="agent-track-lanes" id="agentTrackLanes">
+            ${tracksHtml}
+        </div>
+        ${renderActivityStream(activeSearch)}
+    `;
 
   // Apply syntax highlighting to all code blocks
   applySyntaxHighlighting();
@@ -1594,7 +1701,9 @@ function updateStats() {
   const asst = SESSION_DATA.messages.filter(
     (m) => m.role === "assistant",
   ).length;
-  const subagents = SESSION_DATA.subagent_transcripts?.length || 0;
+  const subagents = getAgentTracks().filter(
+    (track) => track.kind === "subagent",
+  ).length;
   document.getElementById("stats").innerHTML = `
         <span>${total} total</span>
         <span>${user} user</span>

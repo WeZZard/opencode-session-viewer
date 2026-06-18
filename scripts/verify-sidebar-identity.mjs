@@ -111,18 +111,72 @@ async function readIdentityState(page, selector) {
       ),
       rows: rows.map((el) => ({
         index: el.dataset.index || null,
+        agentId: el.dataset.agentId || null,
+        messageIndex: el.dataset.messageIndex || null,
         subagentId: el.dataset.subagentId || null,
         subagentIndex: el.dataset.subagentIndex || null,
         subagentPath: el.dataset.subagentPath || null,
+        activityPath: el.dataset.activityPath || null,
         active: el.classList.contains("active"),
         text: el.textContent.replace(/\\s+/g, " ").trim(),
       })),
       activeRows: activeRows.map((el) => ({
         index: el.dataset.index || null,
+        agentId: el.dataset.agentId || null,
+        messageIndex: el.dataset.messageIndex || null,
         subagentId: el.dataset.subagentId || null,
         subagentIndex: el.dataset.subagentIndex || null,
         subagentPath: el.dataset.subagentPath || null,
+        activityPath: el.dataset.activityPath || null,
       })),
+      selectedAgentId:
+        document.querySelector(
+          '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option.active',
+        )?.dataset.agentId || null,
+      agentFilters: Array.from(document.querySelectorAll(".agent-filter")).map(
+        (filter) => ({
+          location: filter.dataset.agentFilterLocation || null,
+          options: Array.from(
+            filter.querySelectorAll(".agent-filter-option"),
+          ).map((option) => ({
+            agentId: option.dataset.agentId || null,
+            kind: option.dataset.trackKind || null,
+            active: option.classList.contains("active"),
+            text: option.textContent.replace(/\s+/g, " ").trim(),
+          })),
+        }),
+      ),
+      tracks: Array.from(document.querySelectorAll(".agent-track")).map(
+        (el) => ({
+          agentId: el.dataset.agentId || null,
+          kind: el.dataset.trackKind || null,
+          active: el.classList.contains("active"),
+          messageIds: Array.from(
+            el.querySelectorAll(".agent-track-message"),
+          ).map((message) => message.id),
+        }),
+      ),
+      connectors: Array.from(document.querySelectorAll(".agent-connector")).map(
+        (el) => {
+          const sourceMessageId = el.dataset.sourceMessageId || "";
+          const spawnPromptId = el.dataset.spawnPromptId || "";
+          const firstMessageId = el.dataset.firstMessageId || "";
+          return {
+            subagentId: el.dataset.subagentId || null,
+            sourceAgentId: el.dataset.sourceAgentId || null,
+            sourceMessageId,
+            spawnPromptId,
+            firstMessageId,
+            sourceMessageExists: Boolean(
+              document.getElementById(sourceMessageId),
+            ),
+            spawnPromptExists: Boolean(document.getElementById(spawnPromptId)),
+            firstMessageExists: Boolean(
+              document.getElementById(firstMessageId),
+            ),
+          };
+        },
+      ),
       toolBodyIds: Array.from(document.querySelectorAll(".tool-body")).map(
         (el) => el.id,
       ),
@@ -130,6 +184,9 @@ async function readIdentityState(page, selector) {
         .length,
       nestedSubagentCards: document.querySelectorAll(
         ".message .subagent-transcript",
+      ).length,
+      subagentActivityCards: document.querySelectorAll(
+        ".activity-card.subagent-transcript",
       ).length,
       activityCards: Array.from(
         document.querySelectorAll(".activity-card"),
@@ -204,16 +261,22 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     subagent_transcripts: [sharedTranscript],
   });
 
+  const secondSubagentOption = page
+    .locator(
+      '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option[data-track-kind="subagent"]',
+    )
+    .nth(1);
+  await secondSubagentOption.click();
+  const selectedAgentId =
+    await secondSubagentOption.getAttribute("data-agent-id");
   await page
-    .locator('.message-item.subagent-entry[data-subagent-id="shared-session"]')
-    .nth(1)
+    .locator(`.message-item[data-agent-id="${selectedAgentId}"]`)
     .click();
   await page.waitForTimeout(100);
-  const state = await readIdentityState(
-    page,
-    '.message-item.subagent-entry[data-subagent-id="shared-session"]',
-  );
-  const paths = new Set(state.rows.map((row) => row.subagentPath));
+  const state = await readIdentityState(page, ".message-item");
+  const subagentTrackIds = state.tracks
+    .filter((track) => track.kind === "subagent")
+    .map((track) => track.agentId);
   assert(
     state.duplicateIds.length === 0,
     "top-level repeat created duplicate DOM ids",
@@ -230,13 +293,49 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     state,
   );
   assert(
-    paths.size === 2,
-    "top-level repeat did not create distinct subagent paths",
+    state.subagentActivityCards === 0,
+    "top-level subagent transcripts should render as tracks, not activity cards",
+    state,
+  );
+  assert(
+    state.tracks.length === 3 &&
+      subagentTrackIds.length === 2 &&
+      new Set(subagentTrackIds).size === 2,
+    "top-level repeat did not create distinct subagent tracks",
+    state,
+  );
+  assert(
+    state.agentFilters.length === 2 &&
+      state.agentFilters.every((filter) => filter.options.length === 3) &&
+      state.agentFilters.every(
+        (filter) =>
+          filter.options.filter((option) => option.active).length === 1,
+      ),
+    "top-level agent filter did not expose one selected track in each location",
+    state,
+  );
+  assert(
+    state.connectors.length === 2 &&
+      state.connectors.every(
+        (connector) =>
+          connector.sourceMessageExists &&
+          connector.spawnPromptExists &&
+          connector.firstMessageExists,
+      ),
+    "top-level connectors do not resolve their linked DOM anchors",
+    state,
+  );
+  assert(
+    state.rows.length === 1 &&
+      state.rows[0].agentId === selectedAgentId &&
+      state.rows[0].messageIndex === "0",
+    "top-level sidebar is not scoped to the selected subagent stream",
     state,
   );
   assert(
     state.activeRows.length === 1 &&
-      state.activeRows[0].subagentPath === state.rows[1].subagentPath,
+      state.activeRows[0].agentId === selectedAgentId &&
+      state.activeRows[0].messageIndex === "0",
     "top-level repeat click did not activate exactly the clicked row",
     state,
   );
@@ -288,16 +387,21 @@ async function verifyRepeatedNestedTranscript(browser) {
     subagent_transcripts: [parentTranscript],
   });
 
+  const secondChildOption = page
+    .locator(
+      '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option[data-agent-id*="child-session"]',
+    )
+    .nth(1);
+  await secondChildOption.click();
+  const selectedAgentId = await secondChildOption.getAttribute("data-agent-id");
   await page
-    .locator('.message-item.subagent-entry[data-subagent-id="child-session"]')
-    .nth(1)
+    .locator(`.message-item[data-agent-id="${selectedAgentId}"]`)
     .click();
   await page.waitForTimeout(100);
-  const state = await readIdentityState(
-    page,
-    '.message-item.subagent-entry[data-subagent-id="child-session"]',
-  );
-  const paths = new Set(state.rows.map((row) => row.subagentPath));
+  const state = await readIdentityState(page, ".message-item");
+  const childTrackIds = state.tracks
+    .filter((track) => track.agentId?.includes("child-session"))
+    .map((track) => track.agentId);
   assert(
     state.duplicateIds.length === 0,
     "nested repeat created duplicate DOM ids",
@@ -314,13 +418,39 @@ async function verifyRepeatedNestedTranscript(browser) {
     state,
   );
   assert(
-    paths.size === 2,
-    "nested repeat did not create distinct subagent paths",
+    state.subagentActivityCards === 0,
+    "nested subagent transcripts should render as tracks, not activity cards",
+    state,
+  );
+  assert(
+    state.tracks.length === 4 &&
+      childTrackIds.length === 2 &&
+      new Set(childTrackIds).size === 2,
+    "nested repeat did not create distinct child subagent tracks",
+    state,
+  );
+  assert(
+    state.connectors.length === 3 &&
+      state.connectors.every(
+        (connector) =>
+          connector.sourceMessageExists &&
+          connector.spawnPromptExists &&
+          connector.firstMessageExists,
+      ),
+    "nested connectors do not resolve their linked DOM anchors",
+    state,
+  );
+  assert(
+    state.rows.length === 1 &&
+      state.rows[0].agentId === selectedAgentId &&
+      state.rows[0].messageIndex === "0",
+    "nested sidebar is not scoped to the selected child subagent stream",
     state,
   );
   assert(
     state.activeRows.length === 1 &&
-      state.activeRows[0].subagentPath === state.rows[1].subagentPath,
+      state.activeRows[0].agentId === selectedAgentId &&
+      state.activeRows[0].messageIndex === "0",
     "nested repeat click did not activate exactly the clicked row",
     state,
   );
