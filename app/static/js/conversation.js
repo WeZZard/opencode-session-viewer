@@ -2259,20 +2259,16 @@ function getSubagentPanelOverlayMetrics(overlay, openPanelCount) {
 
   if (!openPanelCount || !wrapperWidth) return null;
 
-  const maxAvailableWidth = Math.max(0, wrapperWidth - mainMinWidth - panelGap);
+  const layoutableWidth = Math.max(0, wrapperWidth - mainMinWidth);
+  const resizableMaxWidth = Math.max(0, layoutableWidth - panelGap);
   const targetWidth =
     openPanelCount * panelWidth + Math.max(0, openPanelCount - 1) * panelGap;
-  const maxWidth = maxAvailableWidth;
-  const canLayoutPanel = maxWidth >= panelMinWidth;
+  const hasPanelOverflow = targetWidth > layoutableWidth;
+  const canLayoutPanel = layoutableWidth >= panelMinWidth;
+  const canResizePanels =
+    hasPanelOverflow && resizableMaxWidth >= panelMinWidth;
+  const maxWidth = canResizePanels ? resizableMaxWidth : layoutableWidth;
   const minWidth = Math.min(panelMinWidth, maxWidth);
-  const autoMaxWidth = Math.min(
-    wrapperWidth * 0.72,
-    Math.max(minWidth, maxWidth),
-  );
-  const autoWidth = Math.min(
-    maxWidth,
-    Math.max(Math.min(panelMinWidth, autoMaxWidth), targetWidth),
-  );
 
   return {
     wrapper,
@@ -2281,20 +2277,29 @@ function getSubagentPanelOverlayMetrics(overlay, openPanelCount) {
     panelMinWidth,
     mainMinWidth,
     canLayoutPanel,
+    hasPanelOverflow,
+    canResizePanels,
+    layoutableWidth,
+    targetWidth,
     minWidth,
     maxWidth,
-    autoWidth,
   };
 }
 
 function updateSubagentPanelLayoutReadyState(overlay, metrics) {
   const canLayoutPanel = Boolean(metrics?.canLayoutPanel);
+  const hasPanelOverflow = Boolean(metrics?.hasPanelOverflow);
+  const canResizePanels = Boolean(metrics?.canResizePanels);
   const wrapper = overlay.closest(".main-wrapper");
   overlay.dataset.layoutReady = canLayoutPanel ? "true" : "false";
+  overlay.dataset.panelOverflow = hasPanelOverflow ? "true" : "false";
+  overlay.dataset.panelResizable = canResizePanels ? "true" : "false";
   if (wrapper) {
     wrapper.dataset.subagentPanelLayoutReady = canLayoutPanel
       ? "true"
       : "false";
+    wrapper.dataset.subagentPanelOverflow = hasPanelOverflow ? "true" : "false";
+    wrapper.dataset.subagentPanelResizable = canResizePanels ? "true" : "false";
   }
 }
 
@@ -2304,7 +2309,7 @@ function updateSubagentSeparatorState(overlay, width, metrics) {
     ?.querySelector(".agent-stream-separator");
   if (!separator || !metrics) return;
 
-  if (!metrics.canLayoutPanel) {
+  if (!metrics.canResizePanels) {
     separator.removeAttribute("aria-valuemin");
     separator.removeAttribute("aria-valuemax");
     separator.removeAttribute("aria-valuenow");
@@ -2332,15 +2337,15 @@ function updateSubagentPanelOverlayWidth(overlay, openPanelCount) {
 
   const hasManualWidth = Number.isFinite(subagentPanelRackWidthOverride);
   const nextWidth = metrics.canLayoutPanel
-    ? hasManualWidth
+    ? metrics.canResizePanels && hasManualWidth
       ? clamp(
           subagentPanelRackWidthOverride,
           metrics.minWidth,
           metrics.maxWidth,
         )
-      : metrics.autoWidth
+      : Math.min(metrics.maxWidth, metrics.targetWidth)
     : 0;
-  if (hasManualWidth && metrics.canLayoutPanel) {
+  if (hasManualWidth && metrics.canResizePanels) {
     subagentPanelRackWidthOverride = nextWidth;
   }
   overlay.style.setProperty(
@@ -2368,7 +2373,9 @@ function setSubagentPanelRackWidthOverride(width, options = {}) {
 
   const openPanelCount = Number(overlay.dataset.openPanelCount || 0);
   const metrics = getSubagentPanelOverlayMetrics(overlay, openPanelCount);
-  if (!metrics || !metrics.canLayoutPanel) return null;
+  if (!metrics?.canResizePanels) {
+    return null;
+  }
 
   const nextWidth = clamp(width, metrics.minWidth, metrics.maxWidth);
   subagentPanelRackWidthOverride = nextWidth;
@@ -2390,7 +2397,7 @@ function startSubagentSeparatorResize(event) {
   const metrics = overlay
     ? getSubagentPanelOverlayMetrics(overlay, openPanelCount)
     : null;
-  if (!overlay || !metrics || !metrics.canLayoutPanel) return;
+  if (!overlay || !metrics?.canResizePanels) return;
 
   event.preventDefault();
   event.stopPropagation();
@@ -2477,7 +2484,7 @@ function handleSubagentSeparatorKeydown(event) {
   const metrics = overlay
     ? getSubagentPanelOverlayMetrics(overlay, openPanelCount)
     : null;
-  if (!overlay || !metrics || !metrics.canLayoutPanel) return;
+  if (!overlay || !metrics?.canResizePanels) return;
 
   const currentWidth = overlay.getBoundingClientRect().width;
   const step = event.shiftKey ? 80 : 24;

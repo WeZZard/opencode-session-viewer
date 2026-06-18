@@ -538,6 +538,8 @@ body {
 
 .main-wrapper[data-open-panel-count="0"] > .agent-stream-separator,
 .main-wrapper:not([data-open-panel-count]) > .agent-stream-separator,
+.main-wrapper[data-subagent-panel-overflow="false"] > .agent-stream-separator,
+.main-wrapper[data-subagent-panel-resizable="false"] > .agent-stream-separator,
 .main-wrapper[data-subagent-panel-layout-ready="false"]
   > .agent-stream-separator {
   display: none;

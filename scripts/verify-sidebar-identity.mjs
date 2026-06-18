@@ -193,6 +193,12 @@ async function readIdentityState(page, selector) {
         subagentPanelLayoutReady:
           document.querySelector(".main-wrapper")?.dataset
             .subagentPanelLayoutReady || null,
+        subagentPanelOverflow:
+          document.querySelector(".main-wrapper")?.dataset
+            .subagentPanelOverflow || null,
+        subagentPanelResizable:
+          document.querySelector(".main-wrapper")?.dataset
+            .subagentPanelResizable || null,
         mainStreamCount: document.querySelectorAll(".agent-main-stream").length,
         panelRackCount: document.querySelectorAll(".subagent-panel-rack")
           .length,
@@ -712,6 +718,8 @@ async function verifyAgentStreamPresentation(browser) {
       separator.exists &&
       separator.role === "separator" &&
       state.workspace.subagentPanelLayoutReady === "true" &&
+      state.workspace.subagentPanelOverflow === "true" &&
+      state.workspace.subagentPanelResizable === "true" &&
       separator.ariaOrientation === "vertical" &&
       separator.ariaLabel &&
       separator.tabIndex === 0 &&
@@ -738,6 +746,9 @@ async function verifyAgentStreamPresentation(browser) {
     rackScrollWidth: state.workspace.rackScrollWidth,
     separator: state.workspace.separator,
   });
+  const separatorIsHidden = (state) =>
+    state.workspace.separator.display === "none" &&
+    state.workspace.separator.ariaValueNow === null;
   const dragSeparatorBy = async (deltaX) => {
     const separator = page.locator(".agent-stream-separator");
     const box = await separator.boundingBox();
@@ -783,15 +794,18 @@ async function verifyAgentStreamPresentation(browser) {
     firstOpenState.workspace.subagentPanelCount === 1 &&
       firstOpenState.workspace.panelTrackIds[0] === firstAgentId &&
       firstOpenState.workspace.rackFlexDirection === "row-reverse" &&
+      firstOpenState.workspace.subagentPanelLayoutReady === "true" &&
+      firstOpenState.workspace.subagentPanelOverflow === "false" &&
+      firstOpenState.workspace.subagentPanelResizable === "false" &&
       firstOpenState.workspace.mainContentRect.width <
         initialState.workspace.mainContentRect.width &&
-      separatorShowsSplit(firstOpenState) &&
+      separatorIsHidden(firstOpenState) &&
       nearlyEqual(
         firstOpenState.workspace.panelRects[0].right,
         firstOpenState.workspace.overlayRect.right,
         1,
       ),
-    "first opened subagent should consume right-side layout space with a visible split separator",
+    "first opened subagent should consume right-side layout space without showing the split separator",
     { initialState, firstOpenState },
   );
 
@@ -805,6 +819,8 @@ async function verifyAgentStreamPresentation(browser) {
       openedState.workspace.openPanelCount === 2 &&
       openedState.workspace.overlayOpenPanelCount === 2 &&
       openedState.workspace.panelsInsideWorkspace === 0 &&
+      openedState.workspace.subagentPanelOverflow === "true" &&
+      openedState.workspace.subagentPanelResizable === "true" &&
       separatorShowsSplit(openedState) &&
       panelsFlowRightToLeft(openedState) &&
       openedState.workspace.mainTrackIds[0] === "main" &&
@@ -1092,6 +1108,8 @@ async function verifySeparatorHiddenWhenPanelCannotLayout(browser) {
     state.workspace.subagentPanelCount === 1 &&
       state.workspace.overlayOpenPanelCount === 1 &&
       state.workspace.subagentPanelLayoutReady === "false" &&
+      state.workspace.subagentPanelOverflow === "true" &&
+      state.workspace.subagentPanelResizable === "false" &&
       state.workspace.overlayRect.width < 320 &&
       state.workspace.separator.display === "none" &&
       state.workspace.separator.ariaValueNow === null,
