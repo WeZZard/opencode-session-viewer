@@ -5,7 +5,6 @@ let SESSION_DATA = null;
 let currentFilter = "all";
 let filterQuery = "";
 let showThinkingSteps = false;
-let toolCounter = 0;
 let highlightedId = null;
 let tokenData = [];
 let maxTokens = { input: 1, output: 1, cache: 1 };
@@ -143,6 +142,10 @@ function esc(text) {
   return div.innerHTML;
 }
 
+function escAttr(text) {
+  return esc(text).replace(/"/g, "&quot;");
+}
+
 function domId(value) {
   return String(value || "").replace(/[^A-Za-z0-9_-]/g, "-");
 }
@@ -166,6 +169,29 @@ function getSubagentOccurrencePath(parentIndex, pathSegments = []) {
 
 function getSubagentMessageDomId(subagentPath, subagentIndex) {
   return `submsg-${domId(subagentPath)}-${subagentIndex}`;
+}
+
+function getActivityDomId(activityPath) {
+  return `activity-${domId(activityPath)}`;
+}
+
+function getToolOccurrenceSegment(part, partIndex) {
+  return `tool${partIndex}-${part?.id || part?.tool || "tool"}`;
+}
+
+function getToolActivityPath(part, context = {}) {
+  return getSubagentOccurrencePath(context.parentIndex, [
+    ...(context.subagentPathSegments || []),
+    getToolOccurrenceSegment(part, context.partIndex || 0),
+  ]);
+}
+
+function getLinkedSubagentPath(part, transcript, context = {}) {
+  if (!transcript) return "";
+  return getSubagentOccurrencePath(context.parentIndex, [
+    ...(context.subagentPathSegments || []),
+    getSubagentOccurrenceSegment(part, transcript, context.partIndex || 0),
+  ]);
 }
 
 function stringifyValue(value) {
@@ -487,28 +513,14 @@ function renderSparkline() {
     `;
 }
 
-// Toggle tool
-function toggleTool(id) {
-  const el = document.getElementById(id);
-  if (el) {
-    el.classList.toggle("expanded");
-    // Apply syntax highlighting to code blocks with explicit language classes
-    if (el.classList.contains("expanded")) {
-      el.querySelectorAll('pre code[class*="language-"]:not(.hljs)').forEach(
-        (block) => {
-          hljs.highlightElement(block);
-        },
-      );
-    }
-  }
-}
-
 // Scroll to message
 function setActiveSidebarMessage(idx) {
   document.querySelectorAll(".message-item").forEach((item) => {
     item.classList.toggle(
       "active",
-      !item.dataset.subagentId && Number(item.dataset.index) === idx,
+      !item.dataset.subagentId &&
+        !item.dataset.activityPath &&
+        Number(item.dataset.index) === idx,
     );
   });
 }
@@ -530,8 +542,23 @@ function setActiveSidebarSubagent(
   });
 }
 
+function setActiveSidebarActivity(activityPath) {
+  document.querySelectorAll(".message-item").forEach((item) => {
+    item.classList.toggle(
+      "active",
+      item.dataset.activityPath === activityPath && !item.dataset.subagentId,
+    );
+  });
+}
+
 function clearSidebarNavigationLock() {
   sidebarNavigationLock = null;
+}
+
+function clearHighlightedTargets() {
+  document
+    .querySelectorAll(".highlighted")
+    .forEach((el) => el.classList.remove("highlighted"));
 }
 
 function scrollToMessage(idx) {
@@ -539,11 +566,7 @@ function scrollToMessage(idx) {
   if (el) {
     sidebarNavigationLock = { kind: "message", index: idx };
 
-    if (highlightedId !== null) {
-      document
-        .getElementById("msg-" + highlightedId)
-        ?.classList.remove("highlighted");
-    }
+    clearHighlightedTargets();
 
     el.scrollIntoView({ behavior: "smooth", block: "start" });
     el.classList.add("highlighted");
@@ -566,7 +589,8 @@ function scrollToSubagentMessage(
   subagentPath,
 ) {
   const parentEl = document.getElementById("msg-" + parentIndex);
-  if (!parentEl) return;
+  const activityEl = document.getElementById(getActivityDomId(subagentPath));
+  if (!parentEl && !activityEl) return;
 
   sidebarNavigationLock = {
     kind: "subagent",
@@ -576,31 +600,12 @@ function scrollToSubagentMessage(
     subagentPath,
   };
 
-  parentEl.querySelectorAll(".subagent-transcript").forEach((details) => {
-    const detailsPath = details.dataset.subagentPath;
-    const isTargetPath =
-      subagentPath &&
-      detailsPath &&
-      (subagentPath === detailsPath ||
-        subagentPath.startsWith(detailsPath + "__"));
-    const isFallbackTranscript =
-      !subagentPath && details.dataset.transcriptId === transcriptId;
-    if (isTargetPath || isFallbackTranscript) details.open = true;
-  });
-
-  const childEl = parentEl.querySelector(
-    "#" + CSS.escape(getSubagentMessageDomId(subagentPath, subagentIndex)),
+  const childEl = document.getElementById(
+    getSubagentMessageDomId(subagentPath, subagentIndex),
   );
-  const targetEl = childEl || parentEl;
+  const targetEl = childEl || activityEl || parentEl;
 
-  if (highlightedId !== null) {
-    document
-      .getElementById("msg-" + highlightedId)
-      ?.classList.remove("highlighted");
-  }
-  document
-    .querySelectorAll(".subagent-message.highlighted")
-    .forEach((el) => el.classList.remove("highlighted"));
+  clearHighlightedTargets();
 
   targetEl.scrollIntoView({ behavior: "smooth", block: "start" });
   targetEl.classList.add("highlighted");
@@ -617,6 +622,22 @@ function scrollToSubagentMessage(
 
   setTimeout(() => {
     targetEl.classList.remove("highlighted");
+  }, 2000);
+}
+
+function scrollToActivity(activityPath) {
+  const el = document.getElementById(getActivityDomId(activityPath));
+  if (!el) return;
+
+  sidebarNavigationLock = { kind: "activity", activityPath };
+  clearHighlightedTargets();
+
+  el.scrollIntoView({ behavior: "smooth", block: "start" });
+  el.classList.add("highlighted");
+  setActiveSidebarActivity(activityPath);
+
+  setTimeout(() => {
+    el.classList.remove("highlighted");
   }, 2000);
 }
 
@@ -812,24 +833,34 @@ function renderSidebar() {
       }
 
       const isSubagent = item.kind === "subagent";
-      const itemClass = isSubagent
-        ? "message-item subagent-entry"
-        : "message-item";
+      const isTool = item.kind === "tool";
+      const itemClass = [
+        "message-item",
+        isSubagent ? "activity-entry subagent-entry" : "",
+        isTool ? "activity-entry tool-entry" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
       const clickHandler = isSubagent
         ? "scrollToSubagentMessage(this.dataset.subagentId, Number(this.dataset.subagentIndex), Number(this.dataset.index), this.dataset.subagentPath)"
-        : `scrollToMessage(${item.index})`;
+        : isTool
+          ? "scrollToActivity(this.dataset.activityPath)"
+          : `scrollToMessage(${item.index})`;
       const dataAttrs = isSubagent
-        ? `data-index="${item.parentIndex}" data-subagent-id="${esc(item.transcriptId)}" data-subagent-index="${item.subagentIndex}" data-subagent-path="${esc(item.subagentPath)}"`
-        : `data-index="${item.index}"`;
+        ? `data-index="${item.parentIndex}" data-subagent-id="${escAttr(item.transcriptId)}" data-subagent-index="${item.subagentIndex}" data-subagent-path="${escAttr(item.subagentPath)}"`
+        : isTool
+          ? `data-index="${item.parentIndex}" data-activity-path="${escAttr(item.activityPath)}" data-activity-kind="tool"`
+          : `data-index="${item.index}"`;
 
       return `
                 <div class="${itemClass}" ${dataAttrs} onclick="${clickHandler}">
                     <div class="message-item-header">
                         <span class="role-badge ${item.role}">${item.role}</span>
-                        ${isSubagent ? `<span class="subagent-mini-badge">subagent</span>` : ""}
+                        ${isSubagent ? `<span class="activity-mini-badge subagent">subagent</span>` : ""}
+                        ${isTool ? `<span class="activity-mini-badge tool">tool</span>` : ""}
                         <span class="message-time">${formatTime(item.time)}</span>
                     </div>
-                    ${isSubagent ? `<div class="subagent-context">${esc(item.context)}</div>` : ""}
+                    ${isSubagent || isTool ? `<div class="activity-context">${esc(item.context)}</div>` : ""}
                     <div class="message-preview">${previewHtml}</div>
                 </div>
             `;
@@ -916,6 +947,18 @@ function buildSidebarItems(activeSearch) {
       });
     }
 
+    collectToolSidebarItems(
+      msg,
+      {
+        parentIndex: index,
+        subagents,
+        subagentPathSegments: [],
+        context: `Message ${index + 1}`,
+      },
+      activeSearch,
+      items,
+    );
+
     getMessageSubagentTranscriptRefs(msg, subagents).forEach(
       ({ part, partIndex, transcript }) => {
         collectSubagentSidebarItems(transcript, index, activeSearch, items, [
@@ -926,6 +969,35 @@ function buildSidebarItems(activeSearch) {
   });
 
   return items;
+}
+
+function collectToolSidebarItems(msg, context, activeSearch, items) {
+  (msg.parts || []).forEach((part, partIndex) => {
+    if (part.type !== "tool") return;
+
+    const activityPath = getToolActivityPath(part, {
+      ...context,
+      partIndex,
+    });
+    const text = getToolText(part);
+    if (
+      activeSearch &&
+      !text.toLowerCase().includes(activeSearch.toLowerCase())
+    ) {
+      return;
+    }
+
+    items.push({
+      kind: "tool",
+      role: "tool",
+      time: msg.time_created,
+      preview: getToolPreview(part),
+      text,
+      parentIndex: context.parentIndex,
+      activityPath,
+      context: context.context,
+    });
+  });
 }
 
 function collectSubagentSidebarItems(
@@ -974,7 +1046,190 @@ function collectSubagentSidebarItems(
         );
       },
     );
+
+    collectToolSidebarItems(
+      msg,
+      {
+        parentIndex,
+        subagents,
+        subagentPathSegments: [...pathSegments, `msg${subagentIndex}`],
+        context,
+      },
+      activeSearch,
+      items,
+    );
   });
+}
+
+function buildActivityItems(activeSearch) {
+  const activities = [];
+  const subagents = SESSION_DATA.subagent_transcripts || [];
+
+  SESSION_DATA.messages.forEach((msg, parentIndex) => {
+    collectToolActivities(
+      msg,
+      {
+        parentIndex,
+        subagents,
+        subagentPathSegments: [],
+        parentActivityPath: "",
+      },
+      activeSearch,
+      activities,
+    );
+
+    getMessageSubagentTranscriptRefs(msg, subagents).forEach(
+      ({ part, partIndex, transcript }) => {
+        collectSubagentActivity(
+          transcript,
+          {
+            parentIndex,
+            sourcePartIndex: partIndex,
+            sourcePartId: part?.id || "",
+            pathSegments: [
+              getSubagentOccurrenceSegment(part, transcript, partIndex),
+            ],
+            parentActivityPath: "",
+          },
+          activeSearch,
+          activities,
+        );
+      },
+    );
+  });
+
+  return activities;
+}
+
+function collectToolActivities(msg, context, activeSearch, activities) {
+  (msg.parts || []).forEach((part, partIndex) => {
+    if (part.type !== "tool") return;
+
+    const activityPath = getToolActivityPath(part, {
+      ...context,
+      partIndex,
+    });
+    const text = getToolText(part);
+    if (
+      activeSearch &&
+      !text.toLowerCase().includes(activeSearch.toLowerCase())
+    ) {
+      return;
+    }
+
+    const transcript =
+      part.tool === "task"
+        ? getSubagentTranscriptForPart(part, context.subagents)
+        : null;
+
+    activities.push({
+      kind: "tool",
+      activityPath,
+      parentIndex: context.parentIndex,
+      parentActivityPath: context.parentActivityPath || "",
+      sourcePartIndex: partIndex,
+      sourcePartId: part?.id || "",
+      linkedSubagentPath: getLinkedSubagentPath(part, transcript, {
+        ...context,
+        partIndex,
+      }),
+      part,
+    });
+  });
+}
+
+function collectSubagentActivity(
+  transcript,
+  context,
+  activeSearch,
+  activities,
+) {
+  const activityPath = getSubagentOccurrencePath(
+    context.parentIndex,
+    context.pathSegments,
+  );
+  const subagents = transcript.subagent_transcripts || [];
+  const transcriptText = getTranscriptText(transcript);
+  const hasMatch =
+    !activeSearch ||
+    transcriptText.toLowerCase().includes(activeSearch.toLowerCase());
+
+  if (hasMatch) {
+    activities.push({
+      kind: "subagent",
+      activityPath,
+      transcript,
+      parentIndex: context.parentIndex,
+      parentActivityPath: context.parentActivityPath || "",
+      sourcePartIndex: context.sourcePartIndex,
+      sourcePartId: context.sourcePartId || "",
+      pathSegments: context.pathSegments,
+    });
+  }
+
+  (transcript.messages || []).forEach((msg, subagentIndex) => {
+    const messagePathSegments = [
+      ...context.pathSegments,
+      `msg${subagentIndex}`,
+    ];
+
+    collectToolActivities(
+      msg,
+      {
+        parentIndex: context.parentIndex,
+        subagents,
+        subagentPathSegments: messagePathSegments,
+        parentActivityPath: activityPath,
+      },
+      activeSearch,
+      activities,
+    );
+
+    getMessageSubagentTranscriptRefs(msg, subagents).forEach(
+      ({ part, partIndex, transcript: childTranscript }) => {
+        collectSubagentActivity(
+          childTranscript,
+          {
+            parentIndex: context.parentIndex,
+            sourcePartIndex: partIndex,
+            sourcePartId: part?.id || "",
+            pathSegments: [
+              ...messagePathSegments,
+              getSubagentOccurrenceSegment(part, childTranscript, partIndex),
+            ],
+            parentActivityPath: activityPath,
+          },
+          activeSearch,
+          activities,
+        );
+      },
+    );
+  });
+}
+
+function renderActivityStream(activeSearch) {
+  const activities = buildActivityItems(activeSearch);
+  if (activities.length === 0) return "";
+
+  return `
+        <section class="activity-stream" id="activityStream">
+            <div class="activity-stream-header">
+                <div>
+                    <div class="activity-stream-title">Activity Stream</div>
+                    <div class="activity-stream-subtitle">${activities.length} related ${activities.length === 1 ? "activity" : "activities"}</div>
+                </div>
+            </div>
+            <div class="activity-stream-body">
+                ${activities
+                  .map((activity) =>
+                    activity.kind === "tool"
+                      ? renderToolActivity(activity)
+                      : renderSubagentActivity(activity),
+                  )
+                  .join("")}
+            </div>
+        </section>
+    `;
 }
 
 function getSidebarMatchSnippet(item, query) {
@@ -1001,37 +1256,175 @@ function transcriptMatchesQuery(transcript, query) {
     .includes(query.toLowerCase());
 }
 
-function renderSubagentTranscript(transcript, parentIndex, pathSegments = []) {
+function renderActivityLink(activityPath, label) {
+  if (!activityPath) return "";
+  return `<button type="button" class="activity-link" onclick="scrollToActivity('${escAttr(activityPath)}')">${esc(label)}</button>`;
+}
+
+function renderToolActivityLink(activityPath) {
+  return renderActivityLink(activityPath, "tool result");
+}
+
+function renderSubagentActivityLink(activityPath) {
+  return renderActivityLink(activityPath, "subagent run");
+}
+
+function renderToolReference(part, context = {}) {
+  const st = part.state || {};
+  const transcript =
+    part.tool === "task"
+      ? getSubagentTranscriptForPart(part, context.subagents)
+      : null;
+  const activityPath = getToolActivityPath(part, context);
+  const linkedSubagentPath = getLinkedSubagentPath(part, transcript, context);
+  const summary =
+    st.title || getToolPreview(part).replace(/^Tool \([^)]+\):?\s*/, "");
+  const status =
+    st.status || (st.error ? "error" : st.output ? "completed" : "");
+
+  return `
+        <div class="part part-activity-ref tool-ref" data-activity-path="${escAttr(activityPath)}" data-linked-subagent-path="${escAttr(linkedSubagentPath)}">
+            <div class="activity-ref-main">
+                <span class="activity-ref-kind">tool</span>
+                <span class="activity-ref-title">${esc(part.tool || "tool")}</span>
+                ${summary ? `<span class="activity-ref-summary">${esc(compactText(summary, 160))}</span>` : ""}
+                ${status ? `<span class="activity-ref-status">${esc(status)}</span>` : ""}
+            </div>
+            <div class="activity-ref-actions">
+                ${renderToolActivityLink(activityPath)}
+                ${linkedSubagentPath ? renderSubagentActivityLink(linkedSubagentPath) : ""}
+            </div>
+        </div>
+    `;
+}
+
+function renderToolSections(part) {
+  const st = part.state || {};
+  const inputText = st.input ? JSON.stringify(st.input, null, 2) : "";
+  const outputText = stringifyValue(st.output);
+  const errorText = stringifyValue(st.error);
+  const toolName = (part.tool || "").toLowerCase();
+  const noHighlightTools = [
+    "read",
+    "write",
+    "edit",
+    "glob",
+    "grep",
+    "mcp_read",
+    "mcp_write",
+    "mcp_edit",
+    "mcp_glob",
+    "mcp_grep",
+  ];
+  const skipHighlight = noHighlightTools.some((t) => toolName.includes(t));
+  const inputLangClass = skipHighlight ? "" : "language-json";
+
+  return `
+        ${
+          inputText
+            ? `
+            <div class="tool-section">
+                <div class="tool-section-label">Input</div>
+                <pre class="tool-code"><code class="${inputLangClass}">${esc(inputText)}</code></pre>
+            </div>
+        `
+            : ""
+        }
+        ${
+          outputText
+            ? `
+            <div class="tool-section">
+                <div class="tool-section-label">Output</div>
+                <pre class="tool-code"><code>${esc(outputText)}</code></pre>
+            </div>
+        `
+            : ""
+        }
+        ${
+          errorText
+            ? `
+            <div class="tool-section">
+                <div class="tool-section-label">Error</div>
+                <pre class="tool-code"><code>${esc(errorText)}</code></pre>
+            </div>
+        `
+            : ""
+        }
+    `;
+}
+
+function renderSubagentActivity(activity) {
+  const transcript = activity.transcript;
   const messages = transcript.messages || [];
   const activeSearch = filterQuery || urlSearchQuery;
-  const isLinkedMatch = transcriptMatchesQuery(transcript, activeSearch);
   const title =
     transcript.summary?.title || transcript.summary?.id || "Subagent";
   const agent =
     transcript.agent_type || transcript.summary?.model || "subagent";
-  const openAttr = isLinkedMatch ? " open" : "";
   const transcriptId = transcript.summary?.id || "";
-  const subagentPath = getSubagentOccurrencePath(parentIndex, pathSegments);
 
   const messagesHtml = messages
     .map((msg, index) =>
-      renderSubagentMessage(msg, transcript, index, parentIndex, pathSegments),
+      renderSubagentMessage(
+        msg,
+        transcript,
+        index,
+        activity.parentIndex,
+        activity.pathSegments,
+      ),
     )
     .join("");
 
   return `
-        <details class="subagent-transcript" data-transcript-id="${esc(transcriptId)}" data-subagent-path="${esc(subagentPath)}"${openAttr}>
-            <summary>
-                <span class="subagent-summary-main">
+        <section class="activity-card subagent-transcript" id="${getActivityDomId(activity.activityPath)}" data-activity-kind="subagent" data-subagent-path="${escAttr(activity.activityPath)}" data-transcript-id="${escAttr(transcriptId)}" data-parent-message-index="${activity.parentIndex}" data-source-part-index="${activity.sourcePartIndex}" data-source-part-id="${escAttr(activity.sourcePartId)}" data-parent-activity-path="${escAttr(activity.parentActivityPath || "")}">
+            <div class="activity-card-header">
+                <div class="activity-title-row">
+                    <span class="activity-kind subagent">subagent</span>
                     <span class="subagent-agent">${esc(agent)}</span>
-                    <span class="subagent-title">${esc(title)}</span>
-                </span>
+                    <span class="activity-title">${esc(title)}</span>
+                </div>
                 <span class="subagent-count">${messages.length} message${messages.length === 1 ? "" : "s"}</span>
-            </summary>
-            <div class="subagent-transcript-body">
+            </div>
+            <div class="activity-relation">
+                <span>spawned by message ${activity.parentIndex + 1}</span>
+                <span>part ${activity.sourcePartIndex + 1}</span>
+                ${activity.parentActivityPath ? `<span>parent ${esc(activity.parentActivityPath)}</span>` : ""}
+            </div>
+            <div class="activity-card-body subagent-transcript-body">
                 ${messagesHtml || '<div class="subagent-empty">No transcript messages recorded.</div>'}
             </div>
-        </details>
+        </section>
+    `;
+}
+
+function renderToolActivity(activity) {
+  const part = activity.part;
+  const st = part.state || {};
+  const title = st.title || getToolPreview(part);
+  const linkedSubagent = activity.linkedSubagentPath
+    ? renderSubagentActivityLink(activity.linkedSubagentPath)
+    : "";
+
+  return `
+        <section class="activity-card tool-activity" id="${getActivityDomId(activity.activityPath)}" data-activity-kind="tool" data-activity-path="${escAttr(activity.activityPath)}" data-parent-message-index="${activity.parentIndex}" data-source-part-index="${activity.sourcePartIndex}" data-source-part-id="${escAttr(activity.sourcePartId)}" data-parent-activity-path="${escAttr(activity.parentActivityPath || "")}" data-linked-subagent-path="${escAttr(activity.linkedSubagentPath || "")}">
+            <div class="activity-card-header">
+                <div class="activity-title-row">
+                    <span class="activity-kind tool">tool</span>
+                    <span class="activity-title">${esc(part.tool || "tool")}</span>
+                    ${st.status ? `<span class="tool-status">${esc(st.status)}</span>` : ""}
+                </div>
+                ${linkedSubagent}
+            </div>
+            <div class="activity-relation">
+                <span>result for message ${activity.parentIndex + 1}</span>
+                <span>part ${activity.sourcePartIndex + 1}</span>
+                ${activity.parentActivityPath ? `<span>inside ${esc(activity.parentActivityPath)}</span>` : ""}
+            </div>
+            ${title ? `<div class="activity-summary">${esc(compactText(title, 240))}</div>` : ""}
+            <div class="activity-card-body tool-body expanded" id="tool-body-${domId(activity.activityPath)}">
+                ${renderToolSections(part) || '<div class="subagent-empty">No tool result recorded.</div>'}
+            </div>
+        </section>
     `;
 }
 
@@ -1076,58 +1469,11 @@ function renderSubagentMessage(
 
 // Render part
 function renderPart(part, context = {}) {
-  const availableSubagents =
-    context.subagents || SESSION_DATA?.subagent_transcripts || [];
-
-  // Check for reasoning types
-  const isReasoning =
-    (part.type === "reasoning" && part.text) ||
-    (part.type === "tool" &&
-      part.tool === "task" &&
-      part.state?.input?.subagent_type);
-
-  if (isReasoning) {
-    // Determine content based on reasoning type
-    let content = "";
-    let label = "";
-
-    if (part.type === "reasoning") {
-      label = "Thinking Process";
-      content = DOMPurify.sanitize(marked.parse(part.text));
-    } else {
-      // It's a subtask (tool call)
-      const st = part.state || {};
-      const prompt = st.input?.prompt || st.input?.description || "";
-      const result = st.output || "";
-      const transcript = getSubagentTranscriptForPart(part, availableSubagents);
-      const subagent =
-        st.input?.subagent_type || transcript?.agent_type || "task";
-
-      label = `Subtask: ${subagent}`;
-
-      // Format subtask content
-      const resultText =
-        typeof result === "string" ? result : JSON.stringify(result, null, 2);
-      const subagentPathSegments = transcript
-        ? [
-            ...(context.subagentPathSegments || []),
-            getSubagentOccurrenceSegment(
-              part,
-              transcript,
-              context.partIndex || 0,
-            ),
-          ]
-        : context.subagentPathSegments || [];
-      content = `
-                <div class="subtask-prompt"><strong>Task:</strong> ${esc(prompt)}</div>
-                ${result ? `<div class="subtask-result">${DOMPurify.sanitize(marked.parse(resultText))}</div>` : ""}
-                ${transcript ? renderSubagentTranscript(transcript, context.parentIndex, subagentPathSegments) : ""}
-            `;
-    }
-
+  if (part.type === "reasoning" && part.text) {
+    const content = DOMPurify.sanitize(marked.parse(part.text));
     return `
             <div class="part part-reasoning">
-                <div class="reasoning-label"><span>${part.type === "reasoning" ? "🧠" : "🤖"}</span> ${label}</div>
+                <div class="reasoning-label"><span>🧠</span> Thinking Process</div>
                 <div class="part-text">${content}</div>
             </div>
         `;
@@ -1144,71 +1490,7 @@ function renderPart(part, context = {}) {
   }
 
   if (part.type === "tool") {
-    // If this was handled as reasoning/subtask, skip it here
-    const isSubtask = part.tool === "task" && part.state?.input?.subagent_type;
-    if (isSubtask) return "";
-
-    const st = part.state || {};
-    const id = "tool-" + toolCounter++;
-    const outputText = st.output
-      ? typeof st.output === "string"
-        ? st.output
-        : JSON.stringify(st.output, null, 2)
-      : "";
-
-    // Determine if this tool should have syntax highlighting
-    // File operations (read, write, edit, glob, grep) should NOT have highlighting
-    const noHighlightTools = [
-      "read",
-      "write",
-      "edit",
-      "glob",
-      "grep",
-      "mcp_read",
-      "mcp_write",
-      "mcp_edit",
-      "mcp_glob",
-      "mcp_grep",
-    ];
-    const toolName = (part.tool || "").toLowerCase();
-    const skipHighlight = noHighlightTools.some((t) => toolName.includes(t));
-
-    // Only apply JSON highlighting to input if it's not a file operation tool
-    const inputLangClass = skipHighlight ? "" : "language-json";
-
-    return `
-            <div class="part part-tool">
-                <div class="tool-header" onclick="toggleTool('${id}')">
-                    <span>
-                        <span class="tool-name">${esc(part.tool)}</span>
-                        <span class="tool-summary">${esc(st.title || "")}</span>
-                    </span>
-                    <span class="tool-status">${st.status || ""}</span>
-                </div>
-                <div class="tool-body" id="${id}">
-                    ${
-                      st.input
-                        ? `
-                        <div class="tool-section">
-                            <div class="tool-section-label">Input</div>
-                            <pre class="tool-code"><code class="${inputLangClass}">${esc(JSON.stringify(st.input, null, 2))}</code></pre>
-                        </div>
-                    `
-                        : ""
-                    }
-                    ${
-                      st.output
-                        ? `
-                        <div class="tool-section">
-                            <div class="tool-section-label">Output</div>
-                            <pre class="tool-code"><code>${esc(outputText)}</code></pre>
-                        </div>
-                    `
-                        : ""
-                    }
-                </div>
-            </div>
-        `;
+    return renderToolReference(part, context);
   }
 
   if (part.type === "step-start") {
@@ -1234,10 +1516,9 @@ function renderPart(part, context = {}) {
 function renderTimeline() {
   if (!SESSION_DATA) return;
 
-  toolCounter = 0;
   const activeSearch = filterQuery || urlSearchQuery;
   const timeline = document.getElementById("timeline");
-  timeline.innerHTML = SESSION_DATA.messages
+  const messagesHtml = SESSION_DATA.messages
     .filter((m) => {
       const subagents = SESSION_DATA.subagent_transcripts || [];
       const hasSubagent = messageHasSubagentTranscript(m, subagents);
@@ -1279,6 +1560,7 @@ function renderTimeline() {
             `;
     })
     .join("");
+  timeline.innerHTML = messagesHtml + renderActivityStream(activeSearch);
 
   // Apply syntax highlighting to all code blocks
   applySyntaxHighlighting();

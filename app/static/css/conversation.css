@@ -260,10 +260,17 @@ body {
   background: var(--bg-selected);
 }
 
-.message-item.subagent-entry {
-  margin-left: 12px;
+.message-item.activity-entry {
   padding-left: 12px;
   border-left: 2px solid var(--border-color);
+}
+
+.message-item.subagent-entry {
+  border-left-color: var(--accent-green);
+}
+
+.message-item.tool-entry {
+  border-left-color: var(--accent-orange);
 }
 
 .message-item-header {
@@ -291,22 +298,35 @@ body {
   color: var(--accent-purple);
 }
 
+.role-badge.tool {
+  background: rgba(217, 115, 13, 0.14);
+  color: var(--accent-orange);
+}
+
 .message-time {
   font-size: 11px;
   color: var(--text-tertiary);
 }
 
-.subagent-mini-badge {
+.activity-mini-badge {
   font-size: 9px;
   font-weight: 600;
   padding: 1px 5px;
   border-radius: 3px;
   text-transform: uppercase;
+}
+
+.activity-mini-badge.subagent {
   background: rgba(15, 123, 108, 0.12);
   color: var(--accent-green);
 }
 
-.subagent-context {
+.activity-mini-badge.tool {
+  background: rgba(217, 115, 13, 0.12);
+  color: var(--accent-orange);
+}
+
+.activity-context {
   margin-bottom: 2px;
   font-size: 10px;
   color: var(--text-tertiary);
@@ -642,40 +662,6 @@ body {
   color: #7ee787;
 }
 
-/* Tool calls */
-.part-tool {
-  background: var(--bg-secondary);
-  border-radius: 6px;
-  border: 1px solid var(--border-color);
-  overflow: hidden;
-  margin: 8px 0;
-}
-
-.tool-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  cursor: pointer;
-}
-
-.tool-header:hover {
-  background: var(--bg-hover);
-}
-
-.tool-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--accent-orange);
-}
-
-.tool-summary {
-  font-size: 11px;
-  color: var(--text-secondary);
-  margin-left: 8px;
-  font-weight: normal;
-}
-
 .tool-status {
   font-size: 11px;
   color: var(--accent-green);
@@ -728,6 +714,91 @@ pre.tool-code code {
   font-family: inherit;
 }
 
+.part-activity-ref {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--accent-orange);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+
+.activity-ref-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.activity-ref-kind,
+.activity-kind {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.activity-ref-kind,
+.activity-kind.tool {
+  background: rgba(217, 115, 13, 0.12);
+  color: var(--accent-orange);
+}
+
+.activity-kind.subagent {
+  background: rgba(15, 123, 108, 0.12);
+  color: var(--accent-green);
+}
+
+.activity-ref-title {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.activity-ref-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.activity-ref-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent-green);
+}
+
+.activity-ref-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.activity-link {
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  padding: 3px 7px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.activity-link:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 /* Step markers */
 .part-step {
   font-size: 11px;
@@ -747,7 +818,7 @@ pre.tool-code code {
   color: var(--text-secondary);
 }
 
-/* Reasoning / subtask blocks */
+/* Reasoning blocks */
 .part-reasoning {
   background: rgba(0, 0, 0, 0.03);
   border-left: 3px solid var(--accent-purple);
@@ -773,58 +844,101 @@ pre.tool-code code {
   gap: 6px;
 }
 
-.subtask-prompt {
-  font-size: 0.9em;
-  margin-bottom: 8px;
+.activity-stream {
+  margin-top: 32px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+.activity-stream-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.activity-stream-title {
+  font-size: 13px;
+  font-weight: 700;
   color: var(--text-primary);
 }
 
-.subtask-result {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border-color);
+.activity-stream-subtitle {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
-.subagent-transcript {
-  margin-top: 12px;
+.activity-stream-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.activity-card {
   border: 1px solid var(--border-color);
   border-radius: 6px;
   background: var(--bg-primary);
   overflow: hidden;
+  scroll-margin-top: 24px;
 }
 
-.subagent-transcript > summary {
+.activity-card.highlighted,
+.subagent-message.highlighted {
+  box-shadow: 0 0 0 2px var(--accent-blue);
+}
+
+.activity-card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 9px 12px;
-  cursor: pointer;
-  color: var(--text-primary);
-  list-style: none;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(0, 0, 0, 0.02);
 }
 
-.subagent-transcript > summary::-webkit-details-marker {
-  display: none;
+.dark .activity-card-header {
+  background: rgba(255, 255, 255, 0.02);
 }
 
-.subagent-transcript > summary::before {
-  content: "▸";
-  color: var(--text-tertiary);
-  font-size: 12px;
-  transition: transform 0.15s ease;
-}
-
-.subagent-transcript[open] > summary::before {
-  transform: rotate(90deg);
-}
-
-.subagent-summary-main {
+.activity-title-row {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 1;
+}
+
+.activity-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.activity-relation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.activity-relation span {
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--bg-secondary);
+}
+
+.activity-summary {
+  padding: 8px 12px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .subagent-agent {
@@ -838,25 +952,20 @@ pre.tool-code code {
   text-transform: uppercase;
 }
 
-.subagent-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .subagent-count {
   flex-shrink: 0;
   color: var(--text-tertiary);
   font-size: 11px;
 }
 
+.activity-card-body {
+  padding: 12px;
+}
+
 .subagent-transcript-body {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 0 12px 12px;
 }
 
 .subagent-message {

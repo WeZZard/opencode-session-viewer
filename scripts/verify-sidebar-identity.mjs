@@ -126,6 +126,39 @@ async function readIdentityState(page, selector) {
       toolBodyIds: Array.from(document.querySelectorAll(".tool-body")).map(
         (el) => el.id,
       ),
+      nestedActivityCards: document.querySelectorAll(".message .activity-card")
+        .length,
+      nestedSubagentCards: document.querySelectorAll(
+        ".message .subagent-transcript",
+      ).length,
+      activityCards: Array.from(
+        document.querySelectorAll(".activity-card"),
+      ).map((el) => ({
+        id: el.id,
+        kind: el.dataset.activityKind || null,
+        path: el.dataset.activityPath || el.dataset.subagentPath || null,
+        parentMessageIndex: el.dataset.parentMessageIndex || null,
+        sourcePartIndex: el.dataset.sourcePartIndex || null,
+        sourcePartId: el.dataset.sourcePartId || null,
+        parentActivityPath: el.dataset.parentActivityPath || null,
+        linkedSubagentPath: el.dataset.linkedSubagentPath || null,
+        text: el.textContent.replace(/\s+/g, " ").trim(),
+      })),
+      toolActivities: Array.from(
+        document.querySelectorAll(".tool-activity"),
+      ).map((el) => ({
+        id: el.id,
+        path: el.dataset.activityPath || null,
+        linkedSubagentPath: el.dataset.linkedSubagentPath || null,
+        text: el.textContent.replace(/\s+/g, " ").trim(),
+      })),
+      toolRefs: Array.from(document.querySelectorAll(".part-activity-ref")).map(
+        (el) => ({
+          path: el.dataset.activityPath || null,
+          linkedSubagentPath: el.dataset.linkedSubagentPath || null,
+          text: el.textContent.replace(/\s+/g, " ").trim(),
+        }),
+      ),
     };
   }, selector);
 }
@@ -187,6 +220,16 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     state,
   );
   assert(
+    state.nestedActivityCards === 0,
+    "top-level activities are nested in messages",
+    state,
+  );
+  assert(
+    state.nestedSubagentCards === 0,
+    "top-level subagent cards are nested in messages",
+    state,
+  );
+  assert(
     paths.size === 2,
     "top-level repeat did not create distinct subagent paths",
     state,
@@ -195,6 +238,22 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     state.activeRows.length === 1 &&
       state.activeRows[0].subagentPath === state.rows[1].subagentPath,
     "top-level repeat click did not activate exactly the clicked row",
+    state,
+  );
+  assert(
+    state.toolActivities.length === 2 &&
+      state.toolActivities.every((activity) => activity.linkedSubagentPath),
+    "task tool results were not detached with subagent links",
+    state,
+  );
+  assert(
+    state.toolActivities.some((activity) =>
+      activity.text.includes("main A done"),
+    ) &&
+      state.toolActivities.some((activity) =>
+        activity.text.includes("main B done"),
+      ),
+    "task tool outputs are missing from detached activity cards",
     state,
   );
   await page.close();
@@ -245,6 +304,16 @@ async function verifyRepeatedNestedTranscript(browser) {
     state,
   );
   assert(
+    state.nestedActivityCards === 0,
+    "nested activities are rendered inside messages",
+    state,
+  );
+  assert(
+    state.nestedSubagentCards === 0,
+    "nested subagent cards are rendered inside messages",
+    state,
+  );
+  assert(
     paths.size === 2,
     "nested repeat did not create distinct subagent paths",
     state,
@@ -253,6 +322,19 @@ async function verifyRepeatedNestedTranscript(browser) {
     state.activeRows.length === 1 &&
       state.activeRows[0].subagentPath === state.rows[1].subagentPath,
     "nested repeat click did not activate exactly the clicked row",
+    state,
+  );
+  assert(
+    state.toolActivities.some((activity) =>
+      activity.text.includes("parent done"),
+    ) &&
+      state.toolActivities.some((activity) =>
+        activity.text.includes("child A done"),
+      ) &&
+      state.toolActivities.some((activity) =>
+        activity.text.includes("child B done"),
+      ),
+    "nested task tool outputs are missing from detached activity cards",
     state,
   );
   await page.close();
@@ -293,6 +375,24 @@ async function verifyToolBodyIds(browser) {
   assert(
     state.toolBodyIds.length === 2,
     "expected both tool outputs to render",
+    state,
+  );
+  assert(
+    state.nestedActivityCards === 0,
+    "tool activities are nested in messages",
+    state,
+  );
+  assert(
+    state.toolActivities.length === 2 &&
+      state.toolActivities[0].text.includes("one") &&
+      state.toolActivities[1].text.includes("two"),
+    "detached tool activities do not include both outputs",
+    state,
+  );
+  assert(
+    state.toolRefs.length === 2 &&
+      new Set(state.toolRefs.map((ref) => ref.path)).size === 2,
+    "message tool references do not point at distinct activities",
     state,
   );
   await page.close();
