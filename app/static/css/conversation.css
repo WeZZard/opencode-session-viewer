@@ -260,6 +260,12 @@ body {
   background: var(--bg-selected);
 }
 
+.message-item.subagent-entry {
+  margin-left: 12px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border-color);
+}
+
 .message-item-header {
   display: flex;
   align-items: center;
@@ -288,6 +294,25 @@ body {
 .message-time {
   font-size: 11px;
   color: var(--text-tertiary);
+}
+
+.subagent-mini-badge {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  background: rgba(15, 123, 108, 0.12);
+  color: var(--accent-green);
+}
+
+.subagent-context {
+  margin-bottom: 2px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .message-preview {
