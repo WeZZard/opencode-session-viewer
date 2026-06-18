@@ -2244,6 +2244,12 @@ function restoreSubagentPanelRackWidthOverride() {
   }
 }
 
+function getGoldenRatioMainMinWidth(wrapperWidth, configuredMinWidth) {
+  if (!wrapperWidth) return configuredMinWidth;
+  const goldenRatio = (1 + Math.sqrt(5)) / 2;
+  return wrapperWidth / (goldenRatio + 1);
+}
+
 function getSubagentPanelOverlayMetrics(overlay, openPanelCount) {
   const wrapper = overlay.closest(".main-wrapper");
   const wrapperWidth = wrapper?.clientWidth || overlay.clientWidth || 0;
@@ -2254,11 +2260,15 @@ function getSubagentPanelOverlayMetrics(overlay, openPanelCount) {
     parseFloat(styles.getPropertyValue("--subagent-panel-min-width")) || 320;
   const panelGap =
     parseFloat(styles.getPropertyValue("--agent-stream-panel-gap")) || 16;
-  const mainMinWidth =
+  const configuredMainMinWidth =
     parseFloat(styles.getPropertyValue("--main-stream-min-width")) || 420;
 
   if (!openPanelCount || !wrapperWidth) return null;
 
+  const mainMinWidth = getGoldenRatioMainMinWidth(
+    wrapperWidth,
+    configuredMainMinWidth,
+  );
   const layoutableWidth = Math.max(0, wrapperWidth - mainMinWidth);
   const resizableMaxWidth = Math.max(0, layoutableWidth - panelGap);
   const targetWidth =
@@ -2275,6 +2285,7 @@ function getSubagentPanelOverlayMetrics(overlay, openPanelCount) {
     wrapperWidth,
     panelGap,
     panelMinWidth,
+    configuredMainMinWidth,
     mainMinWidth,
     canLayoutPanel,
     hasPanelOverflow,
@@ -2300,6 +2311,14 @@ function updateSubagentPanelLayoutReadyState(overlay, metrics) {
       : "false";
     wrapper.dataset.subagentPanelOverflow = hasPanelOverflow ? "true" : "false";
     wrapper.dataset.subagentPanelResizable = canResizePanels ? "true" : "false";
+    if (Number.isFinite(metrics?.mainMinWidth)) {
+      wrapper.style.setProperty(
+        "--main-stream-min-width",
+        `${metrics.mainMinWidth.toFixed(1)}px`,
+      );
+    } else {
+      wrapper.style.removeProperty("--main-stream-min-width");
+    }
   }
 }
 

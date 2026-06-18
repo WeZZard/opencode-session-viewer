@@ -186,6 +186,11 @@ async function readIdentityState(page, selector) {
           document.getElementById("agentWorkspace")?.dataset.openPanelCount ||
             0,
         ),
+        mainStreamMinWidth: Number.parseFloat(
+          window
+            .getComputedStyle(document.querySelector(".main-wrapper"))
+            .getPropertyValue("--main-stream-min-width") || "0",
+        ),
         overlayOpenPanelCount: Number(
           document.getElementById("subagentPanelOverlay")?.dataset
             .openPanelCount || 0,
@@ -699,6 +704,7 @@ async function verifyAgentStreamPresentation(browser) {
   const rectCenter = (rect) => (rect.left + rect.right) / 2;
   const nearlyEqual = (left, right, tolerance = 1) =>
     Math.abs(left - right) <= tolerance;
+  const smallerGoldenSegment = (width) => width / ((1 + Math.sqrt(5)) / 2 + 1);
   const rectInside = (inner, outer, tolerance = 1) =>
     inner.left >= outer.left - tolerance &&
     inner.right <= outer.right + tolerance;
@@ -797,6 +803,11 @@ async function verifyAgentStreamPresentation(browser) {
       firstOpenState.workspace.subagentPanelLayoutReady === "true" &&
       firstOpenState.workspace.subagentPanelOverflow === "false" &&
       firstOpenState.workspace.subagentPanelResizable === "false" &&
+      nearlyEqual(
+        firstOpenState.workspace.mainStreamMinWidth,
+        smallerGoldenSegment(firstOpenState.workspace.wrapperRect.width),
+        1,
+      ) &&
       firstOpenState.workspace.mainContentRect.width <
         initialState.workspace.mainContentRect.width &&
       separatorIsHidden(firstOpenState) &&
@@ -821,6 +832,11 @@ async function verifyAgentStreamPresentation(browser) {
       openedState.workspace.panelsInsideWorkspace === 0 &&
       openedState.workspace.subagentPanelOverflow === "true" &&
       openedState.workspace.subagentPanelResizable === "true" &&
+      nearlyEqual(
+        openedState.workspace.mainStreamMinWidth,
+        smallerGoldenSegment(openedState.workspace.wrapperRect.width),
+        1,
+      ) &&
       separatorShowsSplit(openedState) &&
       panelsFlowRightToLeft(openedState) &&
       openedState.workspace.mainTrackIds[0] === "main" &&
