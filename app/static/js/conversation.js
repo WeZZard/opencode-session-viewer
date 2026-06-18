@@ -142,6 +142,104 @@ function esc(text) {
   return div.innerHTML;
 }
 
+function domId(value) {
+  return String(value || "").replace(/[^A-Za-z0-9_-]/g, "-");
+}
+
+function stringifyValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
+
+function compactText(text, maxLength = 300) {
+  const normalized = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized.length > maxLength
+    ? normalized.substring(0, maxLength) + "..."
+    : normalized;
+}
+
+function getSubagentSessionId(part) {
+  return (
+    part?.state?.metadata?.sessionId || part?.state?.metadata?.session_id || ""
+  );
+}
+
+function getSubagentTranscriptForPart(
+  part,
+  subagents = SESSION_DATA?.subagent_transcripts || [],
+) {
+  const sessionId = getSubagentSessionId(part);
+  return (subagents || []).find((transcript) => {
+    return (
+      (part?.id && transcript.task_part_id === part.id) ||
+      (sessionId && transcript.summary?.id === sessionId)
+    );
+  });
+}
+
+function getMessageSubagentTranscripts(
+  msg,
+  subagents = SESSION_DATA?.subagent_transcripts || [],
+) {
+  const transcripts = [];
+  (msg.parts || []).forEach((part) => {
+    const transcript = getSubagentTranscriptForPart(part, subagents);
+    if (transcript) transcripts.push(transcript);
+  });
+  return transcripts;
+}
+
+function messageHasSubagentTranscript(
+  msg,
+  subagents = SESSION_DATA?.subagent_transcripts || [],
+) {
+  return getMessageSubagentTranscripts(msg, subagents).length > 0;
+}
+
+function getTranscriptText(transcript) {
+  let text = [
+    transcript.summary?.title || "",
+    transcript.summary?.id || "",
+    transcript.agent_type || "",
+  ].join(" ");
+
+  (transcript.messages || []).forEach((msg) => {
+    text +=
+      " " + getMessageSearchText(msg, transcript.subagent_transcripts || []);
+  });
+
+  return text;
+}
+
+function getToolText(part) {
+  if (part?.type !== "tool") return "";
+  const state = part.state || {};
+  return [
+    part.tool,
+    state.title,
+    state.status,
+    stringifyValue(state.input),
+    stringifyValue(state.output),
+    stringifyValue(state.error),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function getToolPreview(part) {
+  const state = part.state || {};
+  const output = stringifyValue(state.output);
+  const input = stringifyValue(state.input);
+  const detail = [state.title, output || input || state.status]
+    .filter(Boolean)
+    .join(" - ");
+  const toolName = part.tool || "tool";
+  return compactText(`Tool (${toolName})${detail ? `: ${detail}` : ""}`);
+}
+
 // Determine if a message is a "thinking step" (agentic tool-calling loop message)
 // vs a final/substantive assistant response.
 // A thinking step is an assistant message that either:
@@ -150,6 +248,10 @@ function esc(text) {
 function isThinkingStep(msg) {
   if (msg.role !== "assistant") return false;
   if (msg.finish === "stop") return false;
+  const hasText = (msg.parts || []).some(
+    (part) => part.type === "text" && part.text && !part.synthetic,
+  );
+  if (hasText && msg.finish !== "tool-calls") return false;
   return true;
 }
 
@@ -160,23 +262,56 @@ function getPreview(msg) {
     // Return first paragraph (split by double newline or newline)
     const text = textPart.text.trim();
     const firstPara = text.split(/\n\s*\n/)[0];
-    return firstPara.length > 300
-      ? firstPara.substring(0, 300) + "..."
-      : firstPara;
+    return compactText(firstPara);
+  }
+  const taskPart = msg.parts?.find(
+    (p) => p.type === "tool" && p.tool === "task",
+  );
+  if (taskPart) {
+    const transcript = getSubagentTranscriptForPart(taskPart);
+    const state = taskPart.state || {};
+    const input = state.input || {};
+    const agent = input.subagent_type || transcript?.agent_type || "subagent";
+    const title =
+      transcript?.summary?.title || input.description || input.prompt;
+    if (title) return `Subagent (${agent}): ${title}`;
   }
   const toolPart = msg.parts?.find((p) => p.type === "tool");
-  if (toolPart) return `[${toolPart.tool}]`;
+  if (toolPart) return getToolPreview(toolPart);
   return msg.summary?.title || "";
 }
 
-// Get full text content of a message for filtering
-function getFullText(msg) {
+function getMessageSearchText(
+  msg,
+  subagents = SESSION_DATA?.subagent_transcripts || [],
+) {
   let text = "";
   (msg.parts || []).forEach((p) => {
     if (p.type === "text" && p.text) {
       text += p.text + " ";
     }
+    if (p.type === "tool") {
+      text += getToolText(p) + " ";
+    }
+    if (p.type === "tool" && p.tool === "task") {
+      const state = p.state || {};
+      const input = state.input || {};
+      text += [input.description, input.prompt, state.output]
+        .filter(Boolean)
+        .join(" ");
+
+      const transcript = getSubagentTranscriptForPart(p, subagents);
+      if (transcript) {
+        text += " " + getTranscriptText(transcript);
+      }
+    }
   });
+  return text;
+}
+
+// Get full text content of a message for filtering
+function getFullText(msg) {
+  const text = getMessageSearchText(msg);
   return text.toLowerCase();
 }
 
@@ -199,10 +334,9 @@ function highlightText(text, query) {
 function getMatchSnippet(msg, query) {
   if (!query) return null;
 
-  const textPart = msg.parts?.find((p) => p.type === "text" && p.text);
-  if (!textPart?.text) return null;
+  const text = getMessageSearchText(msg).trim();
+  if (!text) return null;
 
-  const text = textPart.text;
   const lowerText = text.toLowerCase();
   const lowerQuery = query.toLowerCase();
   const matchIndex = lowerText.indexOf(lowerQuery);
@@ -351,7 +485,10 @@ function scrollToMessage(idx) {
     highlightedId = idx;
 
     document.querySelectorAll(".message-item").forEach((item) => {
-      item.classList.toggle("active", parseInt(item.dataset.index) === idx);
+      item.classList.toggle(
+        "active",
+        !item.dataset.subagentId && parseInt(item.dataset.index) === idx,
+      );
     });
 
     updateViz(idx);
@@ -360,6 +497,51 @@ function scrollToMessage(idx) {
       el.classList.remove("highlighted");
     }, 2000);
   }
+}
+
+function scrollToSubagentMessage(transcriptId, subagentIndex, parentIndex) {
+  const parentEl = document.getElementById("msg-" + parentIndex);
+  if (!parentEl) return;
+
+  parentEl
+    .querySelectorAll(
+      `.subagent-transcript[data-transcript-id="${CSS.escape(transcriptId)}"]`,
+    )
+    .forEach((details) => {
+      details.open = true;
+    });
+
+  const childEl = document.getElementById(
+    `submsg-${domId(transcriptId)}-${subagentIndex}`,
+  );
+  const targetEl = childEl || parentEl;
+
+  if (highlightedId !== null) {
+    document
+      .getElementById("msg-" + highlightedId)
+      ?.classList.remove("highlighted");
+  }
+  document
+    .querySelectorAll(".subagent-message.highlighted")
+    .forEach((el) => el.classList.remove("highlighted"));
+
+  targetEl.scrollIntoView({ behavior: "smooth", block: "start" });
+  targetEl.classList.add("highlighted");
+  highlightedId = parentIndex;
+
+  document.querySelectorAll(".message-item").forEach((item) => {
+    item.classList.toggle(
+      "active",
+      item.dataset.subagentId === transcriptId &&
+        Number(item.dataset.subagentIndex) === subagentIndex,
+    );
+  });
+
+  updateViz(parentIndex);
+
+  setTimeout(() => {
+    targetEl.classList.remove("highlighted");
+  }, 2000);
 }
 
 // Detect visible message on scroll
@@ -392,7 +574,7 @@ function detectVisibleMessage() {
     document.querySelectorAll(".message-item").forEach((item) => {
       item.classList.toggle(
         "active",
-        parseInt(item.dataset.index) === closestIdx,
+        !item.dataset.subagentId && parseInt(item.dataset.index) === closestIdx,
       );
     });
   }
@@ -543,50 +725,40 @@ function renderSidebar() {
 
   // Determine which query to use for filtering (typed filter takes precedence over URL search)
   const activeSearch = filterQuery || urlSearchQuery;
-
-  const filtered = SESSION_DATA.messages.filter((m, i) => {
-    if (currentFilter !== "all" && m.role !== currentFilter) return false;
-
-    // Hide thinking steps unless checkbox is checked
-    if (!showThinkingSteps && isThinkingStep(m)) return false;
-
-    const preview = getPreview(m);
-    // Filter out bracketed previews like [bash], [edit], etc.
-    if (/^\[.*?\]$/.test(preview.trim())) return false;
-
-    if (activeSearch) {
-      // Filter on full message text, not just preview
-      const fullText = getFullText(m);
-      if (!fullText.includes(activeSearch.toLowerCase())) return false;
-    }
-    return true;
-  });
+  const items = buildSidebarItems(activeSearch);
 
   const list = document.getElementById("messageList");
-  list.innerHTML = filtered
-    .map((m) => {
-      const idx = SESSION_DATA.messages.indexOf(m);
-
-      // Determine what to show as preview
+  list.innerHTML = items
+    .map((item) => {
       let previewHtml;
       if (activeSearch) {
-        // Try to get a snippet around the filter match
-        const snippet = getMatchSnippet(m, activeSearch);
-        if (snippet) {
-          previewHtml = highlightText(snippet, activeSearch);
-        } else {
-          previewHtml = highlightText(getPreview(m), activeSearch);
-        }
+        previewHtml = highlightText(
+          getSidebarMatchSnippet(item, activeSearch),
+          activeSearch,
+        );
       } else {
-        previewHtml = esc(getPreview(m));
+        previewHtml = esc(item.preview);
       }
 
+      const isSubagent = item.kind === "subagent";
+      const itemClass = isSubagent
+        ? "message-item subagent-entry"
+        : "message-item";
+      const clickHandler = isSubagent
+        ? "scrollToSubagentMessage(this.dataset.subagentId, Number(this.dataset.subagentIndex), Number(this.dataset.index))"
+        : `scrollToMessage(${item.index})`;
+      const dataAttrs = isSubagent
+        ? `data-index="${item.parentIndex}" data-subagent-id="${esc(item.transcriptId)}" data-subagent-index="${item.subagentIndex}"`
+        : `data-index="${item.index}"`;
+
       return `
-                <div class="message-item" data-index="${idx}" onclick="scrollToMessage(${idx})">
+                <div class="${itemClass}" ${dataAttrs} onclick="${clickHandler}">
                     <div class="message-item-header">
-                        <span class="role-badge ${m.role}">${m.role}</span>
-                        <span class="message-time">${formatTime(m.time_created)}</span>
+                        <span class="role-badge ${item.role}">${item.role}</span>
+                        ${isSubagent ? `<span class="subagent-mini-badge">subagent</span>` : ""}
+                        <span class="message-time">${formatTime(item.time)}</span>
                     </div>
+                    ${isSubagent ? `<div class="subagent-context">${esc(item.context)}</div>` : ""}
                     <div class="message-preview">${previewHtml}</div>
                 </div>
             `;
@@ -624,10 +796,191 @@ function clearFilter() {
 
   renderFilterIndicator();
   renderSidebar();
+  renderTimeline();
+}
+
+function messageMatchesSearch(msg, activeSearch, subagents) {
+  if (!activeSearch) return false;
+  return getMessageSearchText(msg, subagents)
+    .toLowerCase()
+    .includes(activeSearch.toLowerCase());
+}
+
+function shouldShowMessageInTranscriptList(msg, activeSearch, subagents) {
+  const hasSubagent = messageHasSubagentTranscript(msg, subagents);
+  const matchesSearch = messageMatchesSearch(msg, activeSearch, subagents);
+  if (currentFilter !== "all" && msg.role !== currentFilter) return false;
+
+  if (
+    !showThinkingSteps &&
+    isThinkingStep(msg) &&
+    !hasSubagent &&
+    !matchesSearch
+  ) {
+    return false;
+  }
+
+  const preview = getPreview(msg);
+  if (/^\[.*?\]$/.test(preview.trim()) && !hasSubagent && !matchesSearch) {
+    return false;
+  }
+
+  if (activeSearch && !matchesSearch) return false;
+  return true;
+}
+
+function buildSidebarItems(activeSearch) {
+  const items = [];
+  const subagents = SESSION_DATA.subagent_transcripts || [];
+
+  SESSION_DATA.messages.forEach((msg, index) => {
+    if (shouldShowMessageInTranscriptList(msg, activeSearch, subagents)) {
+      items.push({
+        kind: "message",
+        role: msg.role,
+        time: msg.time_created,
+        preview: getPreview(msg),
+        text: getMessageSearchText(msg, subagents) || getPreview(msg),
+        index,
+      });
+    }
+
+    getMessageSubagentTranscripts(msg, subagents).forEach((transcript) => {
+      collectSubagentSidebarItems(transcript, index, activeSearch, items);
+    });
+  });
+
+  return items;
+}
+
+function collectSubagentSidebarItems(
+  transcript,
+  parentIndex,
+  activeSearch,
+  items,
+) {
+  const subagents = transcript.subagent_transcripts || [];
+  const transcriptId = transcript.summary?.id || "";
+  const context =
+    transcript.summary?.title || transcript.agent_type || "Subagent transcript";
+
+  (transcript.messages || []).forEach((msg, subagentIndex) => {
+    if (!shouldShowMessageInTranscriptList(msg, activeSearch, subagents)) {
+      return;
+    }
+
+    items.push({
+      kind: "subagent",
+      role: msg.role,
+      time: msg.time_created,
+      preview: getPreview(msg),
+      text: getMessageSearchText(msg, subagents) || getPreview(msg),
+      parentIndex,
+      transcriptId,
+      subagentIndex,
+      context,
+    });
+
+    getMessageSubagentTranscripts(msg, subagents).forEach((childTranscript) => {
+      collectSubagentSidebarItems(
+        childTranscript,
+        parentIndex,
+        activeSearch,
+        items,
+      );
+    });
+  });
+}
+
+function getSidebarMatchSnippet(item, query) {
+  const text = item.text || item.preview || "";
+  const lowerText = text.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  const matchIndex = lowerText.indexOf(lowerQuery);
+  if (matchIndex === -1) return item.preview;
+
+  const contextSize = 100;
+  const start = Math.max(0, matchIndex - contextSize);
+  const end = Math.min(text.length, matchIndex + query.length + contextSize);
+
+  let snippet = text.substring(start, end);
+  if (start > 0) snippet = "..." + snippet;
+  if (end < text.length) snippet += "...";
+  return snippet;
+}
+
+function transcriptMatchesQuery(transcript, query) {
+  if (!query) return false;
+  return getTranscriptText(transcript)
+    .toLowerCase()
+    .includes(query.toLowerCase());
+}
+
+function renderSubagentTranscript(transcript) {
+  const messages = transcript.messages || [];
+  const activeSearch = filterQuery || urlSearchQuery;
+  const isLinkedMatch = transcriptMatchesQuery(transcript, activeSearch);
+  const title =
+    transcript.summary?.title || transcript.summary?.id || "Subagent";
+  const agent =
+    transcript.agent_type || transcript.summary?.model || "subagent";
+  const openAttr = isLinkedMatch ? " open" : "";
+  const transcriptId = transcript.summary?.id || "";
+
+  const messagesHtml = messages
+    .map((msg, index) => renderSubagentMessage(msg, transcript, index))
+    .join("");
+
+  return `
+        <details class="subagent-transcript" data-transcript-id="${esc(transcriptId)}"${openAttr}>
+            <summary>
+                <span class="subagent-summary-main">
+                    <span class="subagent-agent">${esc(agent)}</span>
+                    <span class="subagent-title">${esc(title)}</span>
+                </span>
+                <span class="subagent-count">${messages.length} message${messages.length === 1 ? "" : "s"}</span>
+            </summary>
+            <div class="subagent-transcript-body">
+                ${messagesHtml || '<div class="subagent-empty">No transcript messages recorded.</div>'}
+            </div>
+        </details>
+    `;
+}
+
+function renderSubagentMessage(msg, transcript, index) {
+  const transcriptId = transcript.summary?.id || "";
+  return `
+        <div class="subagent-message ${msg.role}" id="submsg-${domId(transcriptId)}-${index}">
+            <div class="subagent-message-header">
+                <span class="role-badge ${msg.role}">${msg.role}</span>
+                <span class="message-meta">
+                    <span>${formatFullTime(msg.time_created)}</span>
+                    ${msg.modelID ? `<span>${esc(msg.modelID)}</span>` : ""}
+                    ${msg.agent ? `<span>${esc(msg.agent)}</span>` : ""}
+                </span>
+            </div>
+            <div class="subagent-message-body">
+                ${
+                  (msg.parts || [])
+                    .map((p) =>
+                      renderPart(p, {
+                        embedded: true,
+                        subagents: transcript.subagent_transcripts || [],
+                      }),
+                    )
+                    .join("") ||
+                  '<span style="color:var(--text-tertiary)">(no content)</span>'
+                }
+            </div>
+        </div>
+    `;
 }
 
 // Render part
-function renderPart(part) {
+function renderPart(part, context = {}) {
+  const availableSubagents =
+    context.subagents || SESSION_DATA?.subagent_transcripts || [];
+
   // Check for reasoning types
   const isReasoning =
     (part.type === "reasoning" && part.text) ||
@@ -648,7 +1001,9 @@ function renderPart(part) {
       const st = part.state || {};
       const prompt = st.input?.prompt || st.input?.description || "";
       const result = st.output || "";
-      const subagent = st.input?.subagent_type || "task";
+      const transcript = getSubagentTranscriptForPart(part, availableSubagents);
+      const subagent =
+        st.input?.subagent_type || transcript?.agent_type || "task";
 
       label = `Subtask: ${subagent}`;
 
@@ -658,6 +1013,7 @@ function renderPart(part) {
       content = `
                 <div class="subtask-prompt"><strong>Task:</strong> ${esc(prompt)}</div>
                 ${result ? `<div class="subtask-result">${DOMPurify.sanitize(marked.parse(resultText))}</div>` : ""}
+                ${transcript ? renderSubagentTranscript(transcript) : ""}
             `;
     }
 
@@ -771,11 +1127,24 @@ function renderTimeline() {
   if (!SESSION_DATA) return;
 
   toolCounter = 0;
+  const activeSearch = filterQuery || urlSearchQuery;
   const timeline = document.getElementById("timeline");
   timeline.innerHTML = SESSION_DATA.messages
     .filter((m) => {
-      if (!showThinkingSteps && isThinkingStep(m)) return false;
-      return !/^\[.*?\]$/.test(getPreview(m).trim());
+      const subagents = SESSION_DATA.subagent_transcripts || [];
+      const hasSubagent = messageHasSubagentTranscript(m, subagents);
+      const matchesSearch = messageMatchesSearch(m, activeSearch, subagents);
+      if (
+        !showThinkingSteps &&
+        isThinkingStep(m) &&
+        !hasSubagent &&
+        !matchesSearch
+      ) {
+        return false;
+      }
+      return (
+        !/^\[.*?\]$/.test(getPreview(m).trim()) || hasSubagent || matchesSearch
+      );
     })
     .map((m, i) => {
       // We need to use the original index to keep links working
@@ -796,7 +1165,7 @@ function renderTimeline() {
                         </button>
                     </div>
                     <div class="message-body">
-                        ${(m.parts || []).map((p) => renderPart(p)).join("") || '<span style="color:var(--text-tertiary)">(no content)</span>'}
+                        ${(m.parts || []).map((p) => renderPart(p, { subagents: SESSION_DATA.subagent_transcripts || [] })).join("") || '<span style="color:var(--text-tertiary)">(no content)</span>'}
                     </div>
                 </div>
             `;
@@ -835,10 +1204,12 @@ function updateStats() {
   const asst = SESSION_DATA.messages.filter(
     (m) => m.role === "assistant",
   ).length;
+  const subagents = SESSION_DATA.subagent_transcripts?.length || 0;
   document.getElementById("stats").innerHTML = `
         <span>${total} total</span>
         <span>${user} user</span>
         <span>${asst} assistant</span>
+        ${subagents ? `<span>${subagents} subagents</span>` : ""}
     `;
 }
 
@@ -987,6 +1358,7 @@ function initConversation() {
     filterQuery = e.target.value.toLowerCase();
     renderFilterIndicator();
     renderSidebar();
+    renderTimeline();
   });
 
   // Set up thinking steps toggle
