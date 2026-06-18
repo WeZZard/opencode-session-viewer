@@ -240,6 +240,14 @@ async function readIdentityState(page, selector) {
           document.getElementById("subagentPanelRack")?.clientWidth ?? null,
         rackScrollWidth:
           document.getElementById("subagentPanelRack")?.scrollWidth ?? null,
+        rackPaddingLeft: (() => {
+          const rack = document.getElementById("subagentPanelRack");
+          return rack
+            ? Number.parseFloat(
+                window.getComputedStyle(rack).paddingLeft || "0",
+              )
+            : null;
+        })(),
         mainScrollTop: document.getElementById("mainContent")?.scrollTop ?? 0,
         mainScrollLeft: document.getElementById("mainContent")?.scrollLeft ?? 0,
         panelScrollTops: Array.from(
@@ -319,6 +327,7 @@ async function readIdentityState(page, selector) {
           const separator = document.querySelector(".agent-stream-separator");
           if (!separator) return { exists: false };
           const styles = window.getComputedStyle(separator);
+          const capsuleStyles = window.getComputedStyle(separator, "::after");
           const rect = separator.getBoundingClientRect();
           const hitTarget = document.elementFromPoint(
             rect.left + rect.width / 2,
@@ -338,10 +347,21 @@ async function readIdentityState(page, selector) {
             ariaValueNow: separator.getAttribute("aria-valuenow"),
             tabIndex: separator.tabIndex,
             display: styles.display,
+            position: styles.position,
+            zIndex: Number(styles.zIndex),
             pointerEvents: styles.pointerEvents,
             cursor: styles.cursor,
             backgroundImage: styles.backgroundImage,
             backgroundSize: styles.backgroundSize,
+            boxShadow: styles.boxShadow,
+            capsuleWidth: capsuleStyles.width,
+            capsuleHeight: capsuleStyles.height,
+            capsuleBorderTopWidth: capsuleStyles.borderTopWidth,
+            capsuleBorderRightWidth: capsuleStyles.borderRightWidth,
+            capsuleBorderBottomWidth: capsuleStyles.borderBottomWidth,
+            capsuleBorderLeftWidth: capsuleStyles.borderLeftWidth,
+            capsuleBorderRadius: capsuleStyles.borderRadius,
+            capsuleBoxShadow: capsuleStyles.boxShadow,
           };
         })(),
       },
@@ -719,6 +739,8 @@ async function verifyAgentStreamPresentation(browser) {
     const rect = separator.rect;
     const mainRect = state.workspace.mainContentRect;
     const overlayRect = state.workspace.overlayRect;
+    const splitBoundary = overlayRect.left;
+    const shadowOffsetPattern = /\b[78]px 0px (1[46])px/;
 
     return (
       separator.exists &&
@@ -730,6 +752,9 @@ async function verifyAgentStreamPresentation(browser) {
       separator.ariaLabel &&
       separator.tabIndex === 0 &&
       separator.display !== "none" &&
+      separator.position === "absolute" &&
+      separator.zIndex >= 30 &&
+      separator.hitTargetId === "agentStreamSeparator" &&
       separator.pointerEvents === "auto" &&
       separator.cursor === "col-resize" &&
       Number(separator.ariaValueMin) > 0 &&
@@ -738,11 +763,20 @@ async function verifyAgentStreamPresentation(browser) {
       rect.height >= overlayRect.height - 1 &&
       Math.abs(rect.top - overlayRect.top) <= 1 &&
       Math.abs(rect.bottom - overlayRect.bottom) <= 1 &&
-      rect.left >= mainRect.right - 1 &&
-      rect.right <= overlayRect.left + 1 &&
-      rect.right > mainRect.right &&
-      separator.backgroundImage !== "none" &&
-      /\b[23]px 100%/.test(separator.backgroundSize)
+      Math.abs(mainRect.right - splitBoundary) <= 1 &&
+      rect.left < splitBoundary &&
+      rect.right > splitBoundary &&
+      nearlyEqual(rectCenter(rect), splitBoundary, 1) &&
+      separator.backgroundImage === "none" &&
+      separator.boxShadow === "none" &&
+      separator.capsuleWidth === "8px" &&
+      separator.capsuleHeight === "44px" &&
+      separator.capsuleBorderTopWidth === "1px" &&
+      separator.capsuleBorderRightWidth === "1px" &&
+      separator.capsuleBorderBottomWidth === "1px" &&
+      separator.capsuleBorderLeftWidth === "1px" &&
+      separator.capsuleBorderRadius !== "0px" &&
+      shadowOffsetPattern.test(separator.capsuleBoxShadow)
     );
   };
   const separatorResizeSnapshot = (state) => ({
@@ -850,8 +884,12 @@ async function verifyAgentStreamPresentation(browser) {
       firstOpenState.workspace.mainContentRect.width &&
       openedState.workspace.panelTrackIds[0] === firstAgentId &&
       openedState.workspace.panelTrackIds[1] === secondAgentId &&
+      openedState.workspace.rackPaddingLeft >= 16 &&
       openedState.workspace.panelRects[0].left >
         openedState.workspace.panelRects[1].right &&
+      openedState.workspace.panelRects[1].left -
+        openedState.workspace.separator.rect.right >=
+        6 &&
       rectInside(
         openedState.workspace.panelRects[1],
         openedState.workspace.overlayRect,

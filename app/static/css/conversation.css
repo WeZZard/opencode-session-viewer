@@ -423,6 +423,8 @@ body {
   --timeline-inline-padding: 24px;
   --agent-workspace-inline-padding: 2px;
   --agent-stream-panel-gap: 16px;
+  --agent-stream-separator-width: 16px;
+  --agent-stream-separator-half-width: 8px;
   --open-panel-count: 0;
 }
 
@@ -507,33 +509,22 @@ body {
 }
 
 .agent-stream-separator {
-  --separator-mid-color: rgba(120, 119, 116, 0.42);
-  flex: 0 0 var(--agent-stream-panel-gap);
-  width: var(--agent-stream-panel-gap);
-  min-width: var(--agent-stream-panel-gap);
-  align-self: stretch;
-  position: relative;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(
+    var(--subagent-panel-rack-width, 0px) -
+      var(--agent-stream-separator-half-width)
+  );
+  width: var(--agent-stream-separator-width);
   box-sizing: border-box;
-  z-index: 3;
+  z-index: 30;
   cursor: col-resize;
   pointer-events: auto;
   display: flex;
-  align-items: stretch;
+  align-items: center;
   justify-content: center;
-  background-image: linear-gradient(
-    to bottom,
-    rgba(35, 131, 226, 0.38),
-    var(--separator-mid-color) 22%,
-    var(--separator-mid-color) 78%,
-    rgba(15, 123, 108, 0.42)
-  );
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: 2px 100%;
-  border-radius: 999px;
-  box-shadow:
-    -6px 0 14px rgba(35, 131, 226, 0.1),
-    6px 0 18px rgba(15, 123, 108, 0.14);
+  background: transparent;
 }
 
 .main-wrapper[data-open-panel-count="0"] > .agent-stream-separator,
@@ -548,37 +539,27 @@ body {
 .agent-stream-separator:hover,
 .agent-stream-separator:focus-visible,
 .agent-stream-separator.dragging {
-  background-size: 3px 100%;
   outline: none;
 }
 
 .agent-stream-separator:focus-visible::after,
 .agent-stream-separator.dragging::after {
   border-color: var(--accent-blue);
-}
-
-.dark .agent-stream-separator {
-  --separator-mid-color: rgba(155, 155, 155, 0.28);
+  background-color: var(--bg-secondary);
 }
 
 .agent-stream-separator::after {
   content: "";
-  position: absolute;
-  top: 50%;
-  left: 50%;
   width: 8px;
   height: 44px;
-  transform: translate(-50%, -50%);
-  border: 1px solid var(--border-color);
-  border-top: 7px solid rgba(35, 131, 226, 0.38);
-  border-bottom: 7px solid rgba(15, 123, 108, 0.42);
+  border: 1px solid var(--border-color, rgba(120, 119, 116, 0.32));
   border-radius: 999px;
-  background-color: var(--bg-primary);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+  background-color: var(--bg-primary, #fff);
+  box-shadow: 7px 0 14px rgba(0, 0, 0, 0.14);
 }
 
 .dark .agent-stream-separator::after {
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.26);
+  box-shadow: 8px 0 16px rgba(0, 0, 0, 0.34);
 }
 
 .subagent-panel-rack {
@@ -594,6 +575,10 @@ body {
   padding: 24px 2px 24px 0;
   scrollbar-width: thin;
   pointer-events: auto;
+}
+
+.subagent-floating-panels[data-panel-resizable="true"] .subagent-panel-rack {
+  padding-left: var(--agent-stream-panel-gap);
 }
 
 .subagent-panel {

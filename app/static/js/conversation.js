@@ -868,12 +868,18 @@ function scrollElementVerticallyIntoContainer(
 function scrollElementHorizontallyIntoContainer(el, container) {
   const elRect = el.getBoundingClientRect();
   const containerRect = container.getBoundingClientRect();
+  const styles = window.getComputedStyle(container);
+  const visibleLeft =
+    containerRect.left + (parseFloat(styles.paddingLeft) || 0);
+  const visibleRight =
+    containerRect.right - (parseFloat(styles.paddingRight) || 0);
+  const visibleWidth = Math.max(0, visibleRight - visibleLeft);
   let deltaLeft = 0;
 
-  if (elRect.width >= containerRect.width || elRect.left < containerRect.left) {
-    deltaLeft = elRect.left - containerRect.left;
-  } else if (elRect.right > containerRect.right) {
-    deltaLeft = elRect.right - containerRect.right;
+  if (elRect.width >= visibleWidth || elRect.left < visibleLeft) {
+    deltaLeft = elRect.left - visibleLeft;
+  } else if (elRect.right > visibleRight) {
+    deltaLeft = elRect.right - visibleRight;
   }
 
   if (Math.abs(deltaLeft) > 1) {
@@ -2270,14 +2276,12 @@ function getSubagentPanelOverlayMetrics(overlay, openPanelCount) {
     configuredMainMinWidth,
   );
   const layoutableWidth = Math.max(0, wrapperWidth - mainMinWidth);
-  const resizableMaxWidth = Math.max(0, layoutableWidth - panelGap);
   const targetWidth =
     openPanelCount * panelWidth + Math.max(0, openPanelCount - 1) * panelGap;
   const hasPanelOverflow = targetWidth > layoutableWidth;
   const canLayoutPanel = layoutableWidth >= panelMinWidth;
-  const canResizePanels =
-    hasPanelOverflow && resizableMaxWidth >= panelMinWidth;
-  const maxWidth = canResizePanels ? resizableMaxWidth : layoutableWidth;
+  const canResizePanels = hasPanelOverflow && canLayoutPanel;
+  const maxWidth = layoutableWidth;
   const minWidth = Math.min(panelMinWidth, maxWidth);
 
   return {
@@ -2348,9 +2352,11 @@ function updateSubagentSeparatorState(overlay, width, metrics) {
 function updateSubagentPanelOverlayWidth(overlay, openPanelCount) {
   const metrics = getSubagentPanelOverlayMetrics(overlay, openPanelCount);
   updateSubagentPanelLayoutReadyState(overlay, metrics);
+  const wrapper = metrics?.wrapper || overlay.closest(".main-wrapper");
 
   if (!metrics) {
     overlay.style.setProperty("--subagent-panel-rack-width", "0px");
+    wrapper?.style.setProperty("--subagent-panel-rack-width", "0px");
     return;
   }
 
@@ -2368,6 +2374,10 @@ function updateSubagentPanelOverlayWidth(overlay, openPanelCount) {
     subagentPanelRackWidthOverride = nextWidth;
   }
   overlay.style.setProperty(
+    "--subagent-panel-rack-width",
+    `${nextWidth.toFixed(1)}px`,
+  );
+  wrapper?.style.setProperty(
     "--subagent-panel-rack-width",
     `${nextWidth.toFixed(1)}px`,
   );
