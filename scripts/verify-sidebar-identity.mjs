@@ -49,7 +49,11 @@ function harnessHtml() {
           <aside id="sidebar"><div id="sidebarResizeHandle"></div></aside>
           <div id="messageList"></div>
           <div class="main-wrapper">
-            <div id="mainContent"><div id="timeline"></div></div>
+            <div id="mainContent" class="scroll-container">
+              <div class="main-content">
+                <div id="timeline" class="timeline"></div>
+              </div>
+            </div>
             <div
               id="agentStreamSeparator"
               class="agent-stream-separator"
@@ -116,8 +120,11 @@ function duplicateIdsFrom(ids) {
 
 function hasAlignedConnector(connector) {
   const resolvedWithoutOverlap =
-    connector.alignmentStatus === "clamped" &&
-    connector.firstMessageTopDelta >= 0;
+    (connector.alignmentStatus === "clamped" &&
+      connector.firstMessageTopDelta >= 0) ||
+    (connector.alignmentStatus === "aligned" &&
+      connector.firstMessageTopDelta >= 0 &&
+      connector.firstMessageTopDelta <= 32);
 
   return (
     connector.sourceMessageExists &&
@@ -191,6 +198,22 @@ async function readIdentityState(page, selector) {
             .getComputedStyle(document.querySelector(".main-wrapper"))
             .getPropertyValue("--main-stream-min-width") || "0",
         ),
+        mainStreamMaxWidth: Number.parseFloat(
+          window
+            .getComputedStyle(document.querySelector(".main-wrapper"))
+            .getPropertyValue("--main-stream-max-width") || "0",
+        ),
+        mainStreamComputedMaxWidth: (() => {
+          const main = document.querySelector(".agent-main-stream");
+          return main
+            ? Number.parseFloat(window.getComputedStyle(main).maxWidth || "0")
+            : 0;
+        })(),
+        subagentPanelRackWidth: Number.parseFloat(
+          window
+            .getComputedStyle(document.querySelector(".main-wrapper"))
+            .getPropertyValue("--subagent-panel-rack-width") || "0",
+        ),
         overlayOpenPanelCount: Number(
           document.getElementById("subagentPanelOverlay")?.dataset
             .openPanelCount || 0,
@@ -217,6 +240,8 @@ async function readIdentityState(page, selector) {
         panelTrackIds: Array.from(
           document.querySelectorAll(".subagent-panel"),
         ).map((track) => track.dataset.agentId || null),
+        mainContentClientWidth:
+          document.getElementById("mainContent")?.clientWidth ?? null,
         wrapperRect: rectOf(document.querySelector(".main-wrapper")),
         mainContentRect: rectOf(document.getElementById("mainContent")),
         mainRect: (() => {
@@ -329,8 +354,9 @@ async function readIdentityState(page, selector) {
           const styles = window.getComputedStyle(separator);
           const dividerLineStyles = window.getComputedStyle(
             separator,
-            "::after",
+            "::before",
           );
+          const grabberStyles = window.getComputedStyle(separator, "::after");
           const rect = separator.getBoundingClientRect();
           const hitTarget = document.elementFromPoint(
             rect.left + rect.width / 2,
@@ -370,6 +396,17 @@ async function readIdentityState(page, selector) {
             dividerLineBackgroundColor: dividerLineStyles.backgroundColor,
             dividerLineBoxShadow: dividerLineStyles.boxShadow,
             dividerLineClipPath: dividerLineStyles.clipPath,
+            grabberPosition: grabberStyles.position,
+            grabberTop: grabberStyles.top,
+            grabberWidth: grabberStyles.width,
+            grabberHeight: grabberStyles.height,
+            grabberBorderTopWidth: grabberStyles.borderTopWidth,
+            grabberBorderRightWidth: grabberStyles.borderRightWidth,
+            grabberBorderBottomWidth: grabberStyles.borderBottomWidth,
+            grabberBorderLeftWidth: grabberStyles.borderLeftWidth,
+            grabberBorderRadius: grabberStyles.borderRadius,
+            grabberBackgroundColor: grabberStyles.backgroundColor,
+            grabberBoxShadow: grabberStyles.boxShadow,
           };
         })(),
       },
@@ -732,7 +769,9 @@ async function verifyAgentStreamPresentation(browser) {
   const rectCenter = (rect) => (rect.left + rect.right) / 2;
   const nearlyEqual = (left, right, tolerance = 1) =>
     Math.abs(left - right) <= tolerance;
-  const smallerGoldenSegment = (width) => width / ((1 + Math.sqrt(5)) / 2 + 1);
+  const goldenRatio = (1 + Math.sqrt(5)) / 2;
+  const smallerGoldenSegment = (width) => width / (goldenRatio + 1);
+  const largerGoldenSegment = (width) => width / goldenRatio;
   const rectInside = (inner, outer, tolerance = 1) =>
     inner.left >= outer.left - tolerance &&
     inner.right <= outer.right + tolerance;
@@ -749,6 +788,9 @@ async function verifyAgentStreamPresentation(browser) {
     const overlayRect = state.workspace.overlayRect;
     const splitBoundary = overlayRect.left;
     const lineWidth = Number.parseFloat(separator.dividerLineWidth || "0");
+    const grabberTop = Number.parseFloat(separator.grabberTop || "0");
+    const grabberWidth = Number.parseFloat(separator.grabberWidth || "0");
+    const grabberHeight = Number.parseFloat(separator.grabberHeight || "0");
     const lineColorChannels =
       separator.dividerLineBackgroundColor
         ?.match(/rgba?\(([^)]+)\)/)?.[1]
@@ -761,7 +803,8 @@ async function verifyAgentStreamPresentation(browser) {
         : Number.POSITIVE_INFINITY;
     const lineOpacity =
       lineColorChannels.length >= 4 ? lineColorChannels[3] : 1;
-    const rightShadowPattern = /\b[89]px 0px (1[68])px/;
+    const lineRightShadowPattern = /\b[56]px 0px 1[24]px/;
+    const grabberRightShadowPattern = /\b[78]px 0px 1[46]px/;
 
     return (
       separator.exists &&
@@ -793,7 +836,8 @@ async function verifyAgentStreamPresentation(browser) {
       separator.dividerLinePosition === "absolute" &&
       separator.dividerLineTop === "0px" &&
       separator.dividerLineBottom === "0px" &&
-      lineWidth >= 6 &&
+      lineWidth >= 2 &&
+      lineWidth <= 3 &&
       separator.dividerLineBorderTopWidth === "0px" &&
       separator.dividerLineBorderRightWidth === "0px" &&
       separator.dividerLineBorderBottomWidth === "0px" &&
@@ -801,8 +845,19 @@ async function verifyAgentStreamPresentation(browser) {
       separator.dividerLineBorderRadius === "0px" &&
       lineColorSpread <= 8 &&
       lineOpacity > 0.4 &&
-      rightShadowPattern.test(separator.dividerLineBoxShadow) &&
-      separator.dividerLineClipPath !== "none"
+      lineRightShadowPattern.test(separator.dividerLineBoxShadow) &&
+      separator.dividerLineClipPath !== "none" &&
+      separator.grabberPosition === "absolute" &&
+      nearlyEqual(grabberTop, rect.height / 2, 1) &&
+      grabberWidth === 8 &&
+      grabberHeight === 44 &&
+      separator.grabberBorderTopWidth === "1px" &&
+      separator.grabberBorderRightWidth === "1px" &&
+      separator.grabberBorderBottomWidth === "1px" &&
+      separator.grabberBorderLeftWidth === "1px" &&
+      separator.grabberBorderRadius !== "0px" &&
+      separator.grabberBackgroundColor !== "rgba(0, 0, 0, 0)" &&
+      grabberRightShadowPattern.test(separator.grabberBoxShadow)
     );
   };
   const separatorResizeSnapshot = (state) => ({
@@ -815,6 +870,20 @@ async function verifyAgentStreamPresentation(browser) {
   const separatorIsHidden = (state) =>
     state.workspace.separator.display === "none" &&
     state.workspace.separator.ariaValueNow === null;
+  const mainStreamMaxUsesGoldenRatio = (state) =>
+    nearlyEqual(
+      state.workspace.mainStreamMaxWidth,
+      largerGoldenSegment(
+        state.workspace.wrapperRect.width -
+          state.workspace.subagentPanelRackWidth,
+      ),
+      1,
+    ) &&
+    nearlyEqual(
+      state.workspace.mainStreamComputedMaxWidth,
+      state.workspace.mainStreamMaxWidth,
+      1,
+    );
   const dragSeparatorBy = async (deltaX) => {
     const separator = page.locator(".agent-stream-separator");
     const box = await separator.boundingBox();
@@ -832,6 +901,9 @@ async function verifyAgentStreamPresentation(browser) {
     initialState.workspace.mainStreamCount === 1 &&
       initialState.workspace.subagentPanelCount === 0 &&
       initialState.workspace.separator.display === "none" &&
+      mainStreamMaxUsesGoldenRatio(initialState) &&
+      initialState.workspace.mainRect.width <=
+        initialState.workspace.mainStreamMaxWidth + 1 &&
       nearlyEqual(
         rectCenter(initialState.workspace.mainRect),
         rectCenter(initialState.workspace.mainContentRect),
@@ -868,6 +940,7 @@ async function verifyAgentStreamPresentation(browser) {
         smallerGoldenSegment(firstOpenState.workspace.wrapperRect.width),
         1,
       ) &&
+      mainStreamMaxUsesGoldenRatio(firstOpenState) &&
       firstOpenState.workspace.mainContentRect.width <
         initialState.workspace.mainContentRect.width &&
       separatorIsHidden(firstOpenState) &&
@@ -897,6 +970,7 @@ async function verifyAgentStreamPresentation(browser) {
         smallerGoldenSegment(openedState.workspace.wrapperRect.width),
         1,
       ) &&
+      mainStreamMaxUsesGoldenRatio(openedState) &&
       separatorShowsSplit(openedState) &&
       panelsFlowRightToLeft(openedState) &&
       openedState.workspace.mainTrackIds[0] === "main" &&
@@ -1010,6 +1084,7 @@ async function verifyAgentStreamPresentation(browser) {
       manyPanelsState.workspace.openPanelCount === 8 &&
       manyPanelsState.workspace.overlayOpenPanelCount === 8 &&
       manyPanelsState.workspace.panelsInsideWorkspace === 0 &&
+      mainStreamMaxUsesGoldenRatio(manyPanelsState) &&
       separatorShowsSplit(manyPanelsState) &&
       panelsFlowRightToLeft(manyPanelsState) &&
       manyPanelsState.workspace.rackScrollWidth >
@@ -1634,10 +1709,8 @@ async function verifyToolBodyIds(browser) {
   );
   const toolRows = state.rows.filter((row) => row.activityPath);
   assert(
-    toolRows.length === 2 &&
-      new Set(toolRows.map((row) => row.activityPath)).size === 2 &&
-      toolRows.every((row) => row.agentId === "main"),
-    "collapsed tool outputs should render as distinct left navigation rows",
+    toolRows.length === 0,
+    "collapsed hidden tool outputs should not leak into left navigation rows",
     state,
   );
   assert(
@@ -1666,8 +1739,9 @@ async function verifyToolBodyIds(browser) {
   );
   assert(
     expandedFromMessage.activeRows.length === 1 &&
-      expandedFromMessage.activeRows[0].activityPath === "msg0__tool0-bash",
-    "expanding one inline tool result should activate its left navigation row",
+      expandedFromMessage.activeRows[0].activityPath === "msg0__tool0-bash" &&
+      expandedFromMessage.rows.filter((row) => row.activityPath).length === 1,
+    "expanding one inline tool result should insert and activate its left navigation row",
     expandedFromMessage,
   );
 
@@ -1720,12 +1794,12 @@ async function verifyToolBodyIds(browser) {
   await page.waitForTimeout(100);
   const collapsedSecondResult = await readIdentityState(page, ".message-item");
   assert(
-    collapsedSecondResult.rows.filter((row) => row.activityPath).length === 2 &&
+    collapsedSecondResult.rows.filter((row) => row.activityPath).length === 1 &&
       collapsedSecondResult.activeRows.length === 0 &&
       collapsedSecondResult.toolActivities.filter(
         (activity) => activity.visible,
       ).length === 1,
-    "collapsing an inline tool result should keep navigation rows stable",
+    "collapsing an inline tool result should remove its left navigation row",
     collapsedSecondResult,
   );
   await page.close();

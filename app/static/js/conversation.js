@@ -23,6 +23,7 @@ let layoutResizeListenerBound = false;
 let subagentPanelRackWidthOverride = null;
 let subagentSeparatorResizeState = null;
 const SUBAGENT_PANEL_RACK_WIDTH_KEY = "subagentPanelRackWidth";
+const GOLDEN_RATIO = (1 + Math.sqrt(5)) / 2;
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -1086,9 +1087,12 @@ function showToolResult(activityPath, agentId = "", messageIndex = null) {
     : hasParentMessage
       ? { kind: "agent-message", agentId, messageIndex }
       : null;
+  renderSidebar();
   clearHighlightedTargets();
 
   scrollTranscriptElementIntoView(el);
+  syncSubagentPanelsToMain();
+  scheduleSubagentAlignment();
   el.classList.add("highlighted");
   if (activityPath) {
     setActiveSidebarActivity(activityPath);
@@ -1120,7 +1124,16 @@ function toggleToolResult(activityPath, agentId = "", messageIndex = null) {
   if (el.classList.contains("expanded")) {
     setToolResultExpanded(activityPath, false);
     if (agentId && Number.isFinite(parsedMessageIndex)) {
+      sidebarNavigationLock = {
+        kind: "agent-message",
+        agentId,
+        messageIndex: parsedMessageIndex,
+      };
+      renderSidebar();
       setActiveSidebarAgentMessage(agentId, parsedMessageIndex);
+    } else {
+      sidebarNavigationLock = null;
+      renderSidebar();
     }
     return;
   }
@@ -1587,6 +1600,8 @@ function buildSidebarToolItems(msg, track, messageIndex, parentIndex) {
         subagentPathSegments,
         partIndex,
       });
+      if (!expandedToolResults.has(activityPath)) return null;
+
       const preview = getToolResultSidebarPreview(part);
       return {
         kind: "tool",
@@ -2252,8 +2267,35 @@ function restoreSubagentPanelRackWidthOverride() {
 
 function getGoldenRatioMainMinWidth(wrapperWidth, configuredMinWidth) {
   if (!wrapperWidth) return configuredMinWidth;
-  const goldenRatio = (1 + Math.sqrt(5)) / 2;
-  return wrapperWidth / (goldenRatio + 1);
+  return wrapperWidth / (GOLDEN_RATIO + 1);
+}
+
+function getGoldenRatioMainMaxWidth(mainContentWidth) {
+  if (!mainContentWidth) return 0;
+  return mainContentWidth / GOLDEN_RATIO;
+}
+
+function updateMainStreamMaxWidth(
+  wrapper = document.querySelector(".main-wrapper"),
+) {
+  if (!wrapper) return;
+
+  const styles = window.getComputedStyle(wrapper);
+  const rackWidth =
+    parseFloat(styles.getPropertyValue("--subagent-panel-rack-width")) || 0;
+  const wrapperWidth =
+    wrapper.clientWidth || wrapper.getBoundingClientRect().width || 0;
+  const mainContentAreaWidth = Math.max(0, wrapperWidth - rackWidth);
+  const mainMaxWidth = getGoldenRatioMainMaxWidth(mainContentAreaWidth);
+
+  if (Number.isFinite(mainMaxWidth) && mainMaxWidth > 0) {
+    wrapper.style.setProperty(
+      "--main-stream-max-width",
+      `${mainMaxWidth.toFixed(1)}px`,
+    );
+  } else {
+    wrapper.style.removeProperty("--main-stream-max-width");
+  }
 }
 
 function getSubagentPanelOverlayMetrics(overlay, openPanelCount) {
@@ -2357,6 +2399,7 @@ function updateSubagentPanelOverlayWidth(overlay, openPanelCount) {
   if (!metrics) {
     overlay.style.setProperty("--subagent-panel-rack-width", "0px");
     wrapper?.style.setProperty("--subagent-panel-rack-width", "0px");
+    updateMainStreamMaxWidth(wrapper);
     return;
   }
 
@@ -2381,6 +2424,7 @@ function updateSubagentPanelOverlayWidth(overlay, openPanelCount) {
     "--subagent-panel-rack-width",
     `${nextWidth.toFixed(1)}px`,
   );
+  updateMainStreamMaxWidth(wrapper);
   updateSubagentSeparatorState(overlay, nextWidth, metrics);
 }
 
