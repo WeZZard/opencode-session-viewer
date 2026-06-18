@@ -4,6 +4,8 @@ A standalone HTML viewer for browsing OpenCode session logs. View your AI coding
 
 This project now includes a **FastAPI web application** for browsing and viewing sessions directly from your local machine, supporting both the new SQLite database storage and legacy JSON files.
 
+![OpenCode Session Viewer showing the main transcript with parallel subagent streams](docs/assets/opencode-session-viewer-subagent-streams.png)
+
 ## Quick Start
 
 ### 1. Install Dependencies
