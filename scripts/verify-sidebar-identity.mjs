@@ -1336,6 +1336,16 @@ async function verifyToolBodyIds(browser) {
     "collapsed tool outputs should not appear as left navigation rows",
     state,
   );
+  assert(
+    state.rows.every(
+      (row) => !row.text.includes("one") && !row.text.includes("two"),
+    ) &&
+      state.toolRefs.every(
+        (ref) => !ref.text.includes("one") && !ref.text.includes("two"),
+      ),
+    "intermediate step navigation rows and cards should not duplicate tool outputs",
+    state,
+  );
 
   await page.locator("[data-tool-result-button]").first().click();
   await page.waitForTimeout(100);
@@ -1354,8 +1364,12 @@ async function verifyToolBodyIds(browser) {
     expandedFromMessage,
   );
   assert(
-    toolRowsAfterFirstInsert.length === 0,
-    "expanding one inline tool result should not add left navigation tool rows",
+    toolRowsAfterFirstInsert.length === 1 &&
+      toolRowsAfterFirstInsert[0].activityPath === "msg0__tool0-bash" &&
+      !toolRowsAfterFirstInsert[0].text.includes("one") &&
+      expandedFromMessage.activeRows.length === 1 &&
+      expandedFromMessage.activeRows[0].activityPath === "msg0__tool0-bash",
+    "expanding one inline tool result should inject and activate one compact left navigation row",
     expandedFromMessage,
   );
 
@@ -1369,8 +1383,19 @@ async function verifyToolBodyIds(browser) {
     (row) => row.activityPath,
   );
   assert(
-    toolRowsAfterSecondInsert.length === 0,
-    "expanding the second inline tool result should not add left navigation tool rows",
+    toolRowsAfterSecondInsert.length === 2 &&
+      toolRowsAfterSecondInsert.some(
+        (row) =>
+          row.activityPath === "msg0__tool0-bash" && !row.text.includes("one"),
+      ) &&
+      toolRowsAfterSecondInsert.some(
+        (row) =>
+          row.activityPath === "msg0__tool1-bash" && !row.text.includes("two"),
+      ) &&
+      expandedFromSecondMessage.activeRows.length === 1 &&
+      expandedFromSecondMessage.activeRows[0].activityPath ===
+        "msg0__tool1-bash",
+    "expanding a second inline tool result should inject both compact left navigation rows",
     expandedFromSecondMessage,
   );
 
@@ -1389,8 +1414,38 @@ async function verifyToolBodyIds(browser) {
     "inline tool result buttons did not reveal both tool results",
     expandedFromSecondMessage,
   );
+  await page
+    .locator('.message-item.tool-entry[data-activity-path="msg0__tool1-bash"]')
+    .click();
+  await page.waitForTimeout(100);
+  const expandedFromSidebar = await readIdentityState(page, ".message-item");
+  assert(
+    expandedFromSidebar.activeRows.length === 1 &&
+      expandedFromSidebar.activeRows[0].activityPath === "msg0__tool1-bash" &&
+      expandedFromSidebar.toolActivities.filter((activity) => activity.visible)
+        .length === 2,
+    "sidebar tool result row did not keep the inline card visible and active",
+    expandedFromSidebar,
+  );
+  await page.locator('[data-tool-result-button="msg0__tool1-bash"]').click();
+  await page.waitForTimeout(100);
+  const collapsedSecondResult = await readIdentityState(page, ".message-item");
+  assert(
+    collapsedSecondResult.rows.filter((row) => row.activityPath).length === 1 &&
+      collapsedSecondResult.rows.some(
+        (row) => row.activityPath === "msg0__tool0-bash",
+      ) &&
+      !collapsedSecondResult.rows.some(
+        (row) => row.activityPath === "msg0__tool1-bash",
+      ) &&
+      collapsedSecondResult.toolActivities.filter(
+        (activity) => activity.visible,
+      ).length === 1,
+    "collapsing an inline tool result should remove its left navigation row",
+    collapsedSecondResult,
+  );
   await page.close();
-  return expandedFromSecondMessage;
+  return collapsedSecondResult;
 }
 
 async function verifyConnectorAlignmentAfterExpansion(browser) {

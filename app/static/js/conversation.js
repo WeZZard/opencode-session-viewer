@@ -568,13 +568,15 @@ function getToolText(part) {
     .join(" ");
 }
 
-function getToolPreview(part) {
+function getToolPreview(part, options = {}) {
+  const includeResultDetails = options.includeResultDetails !== false;
   const state = part.state || {};
   const output = stringifyValue(state.output);
   const input = stringifyValue(state.input);
-  const detail = [state.title, output || input || state.status]
-    .filter(Boolean)
-    .join(" - ");
+  const detailParts = includeResultDetails
+    ? [state.title, output || input || state.status]
+    : [state.title || state.status];
+  const detail = detailParts.filter(Boolean).join(" - ");
   const toolName = part.tool || "tool";
   return compactText(`Tool (${toolName})${detail ? `: ${detail}` : ""}`);
 }
@@ -616,7 +618,11 @@ function getPreview(msg) {
     if (title) return `Subagent (${agent}): ${title}`;
   }
   const toolPart = msg.parts?.find((p) => p.type === "tool");
-  if (toolPart) return getToolPreview(toolPart);
+  if (toolPart) {
+    return getToolPreview(toolPart, {
+      includeResultDetails: !isIntermediateStep(msg),
+    });
+  }
   return msg.summary?.title || "";
 }
 
@@ -1063,7 +1069,7 @@ function showToolResult(activityPath, agentId = "", messageIndex = null) {
   }, 2000);
 }
 
-function toggleToolResult(activityPath) {
+function toggleToolResult(activityPath, agentId = "", messageIndex = null) {
   const el = document.getElementById(getActivityDomId(activityPath));
   if (!el) return;
 
@@ -1072,7 +1078,15 @@ function toggleToolResult(activityPath) {
     return;
   }
 
-  showToolResult(activityPath);
+  const parsedMessageIndex =
+    messageIndex === null || messageIndex === undefined
+      ? null
+      : Number(messageIndex);
+  showToolResult(
+    activityPath,
+    agentId,
+    Number.isFinite(parsedMessageIndex) ? parsedMessageIndex : null,
+  );
 }
 
 function scrollToActivity(activityPath) {
@@ -1388,12 +1402,28 @@ function renderSidebar() {
           previewHtml = esc(item.preview);
         }
 
+        const isTool = item.kind === "tool";
+        const itemClass = [
+          "message-item",
+          isTool ? "activity-entry tool-entry" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const clickHandler = isTool
+          ? "showToolResult(this.dataset.activityPath, this.dataset.agentId, Number(this.dataset.messageIndex))"
+          : "scrollToAgentMessage(this.dataset.agentId, Number(this.dataset.messageIndex))";
+        const dataAttrs = isTool
+          ? `data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.messageIndex}" data-index="${item.parentIndex}" data-activity-path="${escAttr(item.activityPath)}" data-activity-kind="tool"`
+          : `data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.index}" data-index="${item.parentIndex}"`;
+
         return `
-                <div class="message-item" data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.index}" data-index="${item.parentIndex}" onclick="scrollToAgentMessage(this.dataset.agentId, Number(this.dataset.messageIndex))">
+                <div class="${itemClass}" ${dataAttrs} onclick="${clickHandler}">
                     <div class="message-item-header">
                         <span class="role-badge ${item.role}">${item.role}</span>
+                        ${isTool ? `<span class="activity-mini-badge tool">result</span>` : ""}
                         <span class="message-time">${formatTime(item.time)}</span>
                     </div>
+                    ${isTool ? `<div class="activity-context">${esc(item.context)}</div>` : ""}
                     <div class="message-preview">${previewHtml}</div>
                 </div>
             `;
@@ -1401,6 +1431,21 @@ function renderSidebar() {
       .join("");
 
   restoreSidebarAgentFilterScroll();
+  restoreSidebarActiveState();
+}
+
+function restoreSidebarActiveState() {
+  if (sidebarNavigationLock?.kind === "activity") {
+    setActiveSidebarActivity(sidebarNavigationLock.activityPath);
+    return;
+  }
+
+  if (sidebarNavigationLock?.kind === "agent-message") {
+    setActiveSidebarAgentMessage(
+      sidebarNavigationLock.agentId,
+      sidebarNavigationLock.messageIndex,
+    );
+  }
 }
 
 // Update the filter clear button and label state
@@ -1471,6 +1516,7 @@ function buildSidebarItems(activeSearch) {
   const track = ensureSelectedAgentTrack();
   if (!track) return items;
   const subagents = track.subagents || [];
+  const agentTitle = getAgentTitle(track);
 
   track.messages.forEach((msg, index) => {
     const showMessage = shouldShowMessageInTranscriptList(
@@ -1489,10 +1535,49 @@ function buildSidebarItems(activeSearch) {
         index,
         parentIndex: track.id === "main" ? index : track.parentIndex || 0,
       });
+
+      collectExpandedToolSidebarItems(
+        msg,
+        {
+          parentIndex: track.id === "main" ? index : track.parentIndex || 0,
+          agentId: track.id,
+          messageIndex: index,
+          subagents,
+          subagentPathSegments:
+            track.id === "main" ? [] : [...track.pathSegments, `msg${index}`],
+          context: `${agentTitle} · Message ${index + 1}`,
+        },
+        items,
+      );
     }
   });
 
   return items;
+}
+
+function collectExpandedToolSidebarItems(msg, context, items) {
+  (msg.parts || []).forEach((part, partIndex) => {
+    if (part.type !== "tool") return;
+
+    const activityPath = getToolActivityPath(part, {
+      ...context,
+      partIndex,
+    });
+    if (!expandedToolResults.has(activityPath)) return;
+
+    items.push({
+      kind: "tool",
+      agentId: context.agentId || "main",
+      role: "tool",
+      time: msg.time_created,
+      preview: getToolPreview(part, { includeResultDetails: false }),
+      text: getToolText(part),
+      parentIndex: context.parentIndex,
+      messageIndex: context.messageIndex ?? context.parentIndex,
+      activityPath,
+      context: context.context,
+    });
+  });
 }
 
 function buildMessageToolActivities(msg, context) {
@@ -1545,23 +1630,16 @@ function getSidebarMatchSnippet(item, query) {
   return snippet;
 }
 
-function renderActivityLink(activityPath, label, options = {}) {
+function renderToolActivityLink(activityPath, context = {}) {
   if (!activityPath) return "";
-  const action = options.action || "scrollToActivity";
   const expanded = expandedToolResults.has(activityPath);
-  const ariaExpanded =
-    action === "toggleToolResult"
-      ? ` aria-expanded="${expanded ? "true" : "false"}" data-tool-result-button="${escAttr(activityPath)}"`
-      : "";
-  const buttonLabel =
-    action === "toggleToolResult" && expanded ? "hide result" : label;
-  return `<button type="button" class="activity-link" onclick="${action}('${escAttr(activityPath)}')"${ariaExpanded}>${esc(buttonLabel)}</button>`;
-}
-
-function renderToolActivityLink(activityPath) {
-  return renderActivityLink(activityPath, "tool result", {
-    action: "toggleToolResult",
-  });
+  const agentArg = context.agentId ? `, '${escAttr(context.agentId)}'` : "";
+  const messageIndex =
+    context.messageIndex === null || context.messageIndex === undefined
+      ? ""
+      : `, ${context.messageIndex}`;
+  const buttonLabel = expanded ? "hide result" : "tool result";
+  return `<button type="button" class="activity-link" onclick="toggleToolResult('${escAttr(activityPath)}'${agentArg}${messageIndex})" aria-expanded="${expanded ? "true" : "false"}" data-tool-result-button="${escAttr(activityPath)}">${esc(buttonLabel)}</button>`;
 }
 
 function renderSubagentActivityLink(activityPath) {
@@ -1577,8 +1655,9 @@ function renderToolReference(part, context = {}) {
       : null;
   const activityPath = getToolActivityPath(part, context);
   const linkedSubagentPath = getLinkedSubagentPath(part, transcript, context);
-  const summary =
-    st.title || getToolPreview(part).replace(/^Tool \([^)]+\):?\s*/, "");
+  const summary = context.intermediateStep
+    ? st.title || ""
+    : st.title || getToolPreview(part).replace(/^Tool \([^)]+\):?\s*/, "");
   const status =
     st.status || (st.error ? "error" : st.output ? "completed" : "");
   const spawnAttrs = linkedSubagentPath
@@ -1594,7 +1673,7 @@ function renderToolReference(part, context = {}) {
                 ${status ? `<span class="activity-ref-status">${esc(status)}</span>` : ""}
             </div>
             <div class="activity-ref-actions">
-                ${renderToolActivityLink(activityPath)}
+                ${renderToolActivityLink(activityPath, context)}
                 ${linkedSubagentPath ? renderSubagentActivityLink(linkedSubagentPath) : ""}
             </div>
         </div>
@@ -1875,6 +1954,7 @@ function renderAgentMessage(msg, track, messageIndex) {
                                   renderPart(p, {
                                     ...toolContext,
                                     agentId: track.id,
+                                    intermediateStep: isIntermediateStep(msg),
                                     role: msg.role,
                                     messageIndex,
                                     partIndex,
