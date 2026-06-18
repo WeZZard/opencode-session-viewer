@@ -12,6 +12,7 @@ let currentMessageIndex = 0;
 let urlSearchQuery = ""; // Search query from URL (for highlighting)
 let sidebarNavigationLock = null;
 let selectedAgentId = "main";
+const openSubagentPanelIds = new Set();
 const expandedToolResults = new Set();
 let alignmentFrame = null;
 let sidebarAgentFilterScrollLeft = 0;
@@ -275,6 +276,30 @@ function getAgentTitle(track) {
   );
 }
 
+function getMessageModelId(msg) {
+  return (
+    msg?.model?.modelID ||
+    msg?.modelID ||
+    (typeof msg?.model === "string" ? msg.model : "") ||
+    ""
+  );
+}
+
+function getTrackModel(track) {
+  if (!track) return "";
+  const summaryModel =
+    track.transcript?.summary?.model ||
+    (track.id === "main" ? SESSION_DATA?.summary?.model : "");
+  if (summaryModel && summaryModel !== "Unknown") return summaryModel;
+
+  const models = Array.from(
+    new Set((track.messages || []).map(getMessageModelId).filter(Boolean)),
+  );
+  if (models.length === 1) return models[0];
+  if (models.length > 1) return `${models.length} models`;
+  return "";
+}
+
 function getAgentTracks() {
   if (!SESSION_DATA) return [];
 
@@ -409,6 +434,92 @@ function ensureSelectedAgentTrack(tracks = getAgentTracks()) {
   if (selected) return selected;
   selectedAgentId = "main";
   return tracks.find((track) => track.id === "main") || tracks[0];
+}
+
+function reconcileOpenSubagentPanels(tracks = getAgentTracks()) {
+  const trackIds = new Set(tracks.map((track) => track.id));
+  Array.from(openSubagentPanelIds).forEach((agentId) => {
+    if (!trackIds.has(agentId)) {
+      openSubagentPanelIds.delete(agentId);
+    }
+  });
+
+  if (!trackIds.has(selectedAgentId)) {
+    selectedAgentId = "main";
+  }
+}
+
+function getSubagentAncestorIds(agentId, tracks = getAgentTracks()) {
+  const trackById = new Map(tracks.map((track) => [track.id, track]));
+  const ancestors = [];
+  let current = trackById.get(agentId);
+
+  while (current?.parentAgentId && current.parentAgentId !== "main") {
+    const parent = trackById.get(current.parentAgentId);
+    if (!parent || parent.kind !== "subagent") break;
+    ancestors.unshift(parent.id);
+    current = parent;
+  }
+
+  return ancestors;
+}
+
+function getSubagentDescendantIds(agentId, tracks = getAgentTracks()) {
+  const descendants = [];
+
+  function collect(parentId) {
+    tracks
+      .filter(
+        (track) =>
+          track.kind === "subagent" && track.parentAgentId === parentId,
+      )
+      .forEach((track) => {
+        descendants.push(track.id);
+        collect(track.id);
+      });
+  }
+
+  collect(agentId);
+  return descendants;
+}
+
+function openSubagentPanel(agentId, tracks = getAgentTracks()) {
+  const track = tracks.find((candidate) => candidate.id === agentId);
+  if (!track || track.kind !== "subagent") return false;
+
+  getSubagentAncestorIds(agentId, tracks).forEach((ancestorId) => {
+    openSubagentPanelIds.add(ancestorId);
+  });
+  openSubagentPanelIds.add(agentId);
+  return true;
+}
+
+function closeSubagentPanel(agentId, event = null) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  const tracks = getAgentTracks();
+  [agentId, ...getSubagentDescendantIds(agentId, tracks)].forEach((id) => {
+    openSubagentPanelIds.delete(id);
+  });
+
+  if (!openSubagentPanelIds.has(selectedAgentId)) {
+    selectedAgentId = "main";
+  }
+
+  sidebarNavigationLock = null;
+  renderSidebar();
+  renderTimeline();
+}
+
+function getOpenSubagentTracks(tracks = getAgentTracks()) {
+  reconcileOpenSubagentPanels(tracks);
+  const trackById = new Map(tracks.map((track) => [track.id, track]));
+  return Array.from(openSubagentPanelIds)
+    .map((agentId) => trackById.get(agentId))
+    .filter((track) => track?.kind === "subagent");
 }
 
 function getTaskPrompt(part) {
@@ -730,13 +841,21 @@ function scrollToAgentMessage(agentId, messageIndex) {
   const track = tracks.find((candidate) => candidate.id === agentId);
   if (!track) return;
 
-  if (selectedAgentId !== agentId) {
+  if (track.kind === "subagent" && !openSubagentPanelIds.has(agentId)) {
+    openSubagentPanel(agentId, tracks);
     selectedAgentId = agentId;
     sidebarNavigationLock = null;
     renderSidebar();
     renderTimeline();
     requestAnimationFrame(() => scrollToAgentMessage(agentId, messageIndex));
     return;
+  }
+
+  if (selectedAgentId !== agentId) {
+    selectedAgentId = agentId;
+    sidebarNavigationLock = null;
+    renderSidebar();
+    renderTimeline();
   }
 
   const el = document.getElementById(
@@ -796,6 +915,22 @@ function setToolResultExpanded(activityPath, expanded) {
 }
 
 function showToolResult(activityPath, agentId = "", messageIndex = null) {
+  if (agentId) {
+    const tracks = getAgentTracks();
+    const track = tracks.find((candidate) => candidate.id === agentId);
+    if (track?.kind === "subagent" && !openSubagentPanelIds.has(agentId)) {
+      openSubagentPanel(agentId, tracks);
+      selectedAgentId = agentId;
+      sidebarNavigationLock = null;
+      renderSidebar();
+      renderTimeline();
+      requestAnimationFrame(() =>
+        showToolResult(activityPath, agentId, messageIndex),
+      );
+      return;
+    }
+  }
+
   if (agentId && selectedAgentId !== agentId) {
     selectedAgentId = agentId;
     sidebarNavigationLock = null;
@@ -1031,21 +1166,46 @@ function renderAgentFilter(location) {
   const tracks = getAgentTracks();
   if (!tracks.length) return "";
   ensureSelectedAgentTrack(tracks);
+  reconcileOpenSubagentPanels(tracks);
 
   return `
         <div class="agent-filter" data-agent-filter-location="${escAttr(location)}" role="listbox" aria-label="Agent stream selector">
             ${tracks
               .map((track) => {
                 const active = track.id === selectedAgentId;
+                const panelOpen =
+                  track.kind === "subagent" &&
+                  openSubagentPanelIds.has(track.id);
                 const count = track.messages.length;
                 return `
-                    <button type="button" class="agent-filter-option ${active ? "active" : ""}" role="option" aria-selected="${active ? "true" : "false"}" data-agent-id="${escAttr(track.id)}" data-track-kind="${escAttr(track.kind)}" onclick="selectAgentTrack(this.dataset.agentId)">
+                    <button type="button" class="agent-filter-option ${active ? "active" : ""} ${panelOpen ? "panel-open" : ""}" role="option" aria-selected="${active ? "true" : "false"}" aria-pressed="${panelOpen ? "true" : "false"}" data-agent-id="${escAttr(track.id)}" data-track-kind="${escAttr(track.kind)}" data-panel-open="${panelOpen ? "true" : "false"}" onclick="selectAgentTrack(this.dataset.agentId)">
                         <span class="agent-filter-kind">${track.kind === "main" ? "main" : "subagent"}</span>
                         <span class="agent-filter-title">${esc(getAgentTitle(track))}</span>
                         <span class="agent-filter-count">${count}</span>
                     </button>
                 `;
               })
+              .join("")}
+        </div>
+    `;
+}
+
+function renderSelectedAgentStrip(location) {
+  const tracks = getAgentTracks();
+  const selectedTracks = getOpenSubagentTracks(tracks);
+  if (!selectedTracks.length) return "";
+
+  return `
+        <div class="selected-agent-strip" data-selected-agent-strip-location="${escAttr(location)}" aria-label="Open subagent panels">
+            ${selectedTracks
+              .map(
+                (track) => `
+                    <button type="button" class="selected-agent-chip ${track.id === selectedAgentId ? "active" : ""}" data-agent-id="${escAttr(track.id)}" onclick="selectAgentTrack(this.dataset.agentId)">
+                        <span>${esc(getAgentTitle(track))}</span>
+                        <span class="selected-agent-chip-close" aria-label="Close ${escAttr(getAgentTitle(track))}" onclick="closeSubagentPanel('${escAttr(track.id)}', event)">×</span>
+                    </button>
+                `,
+              )
               .join("")}
         </div>
     `;
@@ -1081,6 +1241,14 @@ function restoreSidebarAgentFilterScroll() {
 
 function selectAgentTrack(agentId) {
   if (!agentId || selectedAgentId === agentId) return;
+  const tracks = getAgentTracks();
+  const track = tracks.find((candidate) => candidate.id === agentId);
+  if (!track) return;
+
+  if (track.kind === "subagent") {
+    openSubagentPanel(agentId, tracks);
+  }
+
   selectedAgentId = agentId;
   sidebarNavigationLock = null;
   renderSidebar();
@@ -1093,7 +1261,7 @@ function selectAgentTrack(agentId) {
     track?.scrollIntoView({
       behavior: "smooth",
       block: "nearest",
-      inline: "center",
+      inline: "nearest",
     });
   });
 }
@@ -1110,6 +1278,7 @@ function renderSidebar() {
   const list = document.getElementById("messageList");
   list.innerHTML =
     renderAgentFilter("sidebar") +
+    renderSelectedAgentStrip("sidebar") +
     items
       .map((item) => {
         let previewHtml;
@@ -1496,15 +1665,55 @@ function renderInlineToolResults(activities) {
     `;
 }
 
+function renderMarkdownSegment(text) {
+  if (!text) return "";
+  return DOMPurify.sanitize(marked.parse(text));
+}
+
+function getClaudeCodeBlockKind(block) {
+  return block.match(/^<([a-zA-Z][a-zA-Z0-9_-]*)\b/)?.[1] || "block";
+}
+
+function renderClaudeCodeBlock(block) {
+  const kind = getClaudeCodeBlockKind(block);
+  const label = kind
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+
+  return `
+        <figure class="claude-code-block" data-claude-code-block="${escAttr(kind)}">
+            <figcaption>Claude Code ${esc(label)}</figcaption>
+            <pre><code class="language-xml">${esc(block)}</code></pre>
+        </figure>
+    `;
+}
+
+function renderAssistantText(text) {
+  const blockPattern =
+    /<path>[\s\S]*?<\/content>|<(task|task_result|shell_metadata|skill_content|system-reminder)\b[\s\S]*?<\/\1>/gi;
+  let html = "";
+  let lastIndex = 0;
+  let match;
+
+  while ((match = blockPattern.exec(text)) !== null) {
+    html += renderMarkdownSegment(text.slice(lastIndex, match.index));
+    html += renderClaudeCodeBlock(match[0]);
+    lastIndex = match.index + match[0].length;
+  }
+
+  html += renderMarkdownSegment(text.slice(lastIndex));
+  return html;
+}
+
 // Render part
 function renderPart(part, context = {}) {
   if (part.type === "reasoning" && part.text) {
-    const content = DOMPurify.sanitize(marked.parse(part.text));
+    const content = renderMarkdownSegment(part.text);
     return `
-            <div class="part part-reasoning">
-                <div class="reasoning-label"><span>🧠</span> Thinking Process</div>
+            <details class="part part-reasoning" data-reasoning-collapsed="true">
+                <summary class="reasoning-label">Thinking Process</summary>
                 <div class="part-text">${content}</div>
-            </div>
+            </details>
         `;
   }
 
@@ -1513,8 +1722,10 @@ function renderPart(part, context = {}) {
     if (part.synthetic) {
       return "";
     }
-    // Parse markdown and sanitize HTML
-    const cleanHtml = DOMPurify.sanitize(marked.parse(part.text));
+    const cleanHtml =
+      context.role === "assistant"
+        ? renderAssistantText(part.text)
+        : renderMarkdownSegment(part.text);
     return `<div class="part"><div class="part-text">${cleanHtml}</div></div>`;
   }
 
@@ -1591,6 +1802,7 @@ function renderAgentMessage(msg, track, messageIndex) {
   const messageId = getAgentMessageDomId(track.id, messageIndex);
   const parentIndex =
     track.id === "main" ? messageIndex : track.parentIndex || 0;
+  const messageModel = getMessageModelId(msg);
   const subagentPathSegments =
     track.id === "main" ? [] : [...track.pathSegments, `msg${messageIndex}`];
   const toolContext = {
@@ -1618,7 +1830,7 @@ function renderAgentMessage(msg, track, messageIndex) {
                                 <span class="role-badge ${msg.role}">${msg.role}</span>
                                 <span class="message-meta">
                                     <span>${formatFullTime(msg.time_created)}</span>
-                                    ${msg.modelID ? `<span>${esc(msg.modelID)}</span>` : ""}
+                                    ${track.kind === "main" && messageModel ? `<span>${esc(messageModel)}</span>` : ""}
                                     ${msg.agent ? `<span>${esc(msg.agent)}</span>` : ""}
                                 </span>
                             </div>
@@ -1631,6 +1843,7 @@ function renderAgentMessage(msg, track, messageIndex) {
                                   renderPart(p, {
                                     ...toolContext,
                                     agentId: track.id,
+                                    role: msg.role,
                                     messageIndex,
                                     partIndex,
                                   }),
@@ -1645,7 +1858,7 @@ function renderAgentMessage(msg, track, messageIndex) {
             `;
 }
 
-function renderAgentTrack(track, activeSearch) {
+function renderAgentTrack(track, activeSearch, options = {}) {
   const subagents = track.subagents || [];
   const visibleMessages = track.messages
     .map((msg, index) => {
@@ -1658,15 +1871,29 @@ function renderAgentTrack(track, activeSearch) {
     .join("");
   const active = track.id === selectedAgentId;
   const title = getAgentTitle(track);
+  const model = getTrackModel(track);
+  const isPanel = options.variant === "panel";
+  const trackClasses = [
+    "agent-track",
+    active ? "active" : "",
+    track.kind === "main" ? "agent-main-stream" : "",
+    isPanel ? "subagent-panel" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return `
-        <section class="agent-track ${active ? "active" : ""}" id="agent-track-${domId(track.id)}" data-agent-id="${escAttr(track.id)}" data-track-kind="${escAttr(track.kind)}">
+        <section class="${trackClasses}" id="agent-track-${domId(track.id)}" data-agent-id="${escAttr(track.id)}" data-track-kind="${escAttr(track.kind)}" data-panel-open="${isPanel ? "true" : "false"}">
             <div class="agent-track-header">
                 <div>
                     <div class="agent-track-kicker">${track.kind === "main" ? "main agent" : track.unlinked ? "unlinked subagent" : "subagent"}</div>
                     <div class="agent-track-title">${esc(title)}</div>
                 </div>
-                <div class="agent-track-meta">${track.messages.length} message${track.messages.length === 1 ? "" : "s"}</div>
+                <div class="agent-track-actions">
+                    ${track.kind === "subagent" && model ? `<div class="agent-track-model" data-track-model="${escAttr(model)}">${esc(model)}</div>` : ""}
+                    <div class="agent-track-meta">${track.messages.length} message${track.messages.length === 1 ? "" : "s"}</div>
+                    ${isPanel ? `<button type="button" class="agent-panel-close" aria-label="Close ${escAttr(title)}" onclick="closeSubagentPanel('${escAttr(track.id)}', event)">×</button>` : ""}
+                </div>
             </div>
             ${renderAgentConnector(track)}
             <div class="agent-track-body">
@@ -1751,13 +1978,26 @@ function renderTimeline() {
   const timeline = document.getElementById("timeline");
   const tracks = getAgentTracks();
   ensureSelectedAgentTrack(tracks);
-  const tracksHtml = tracks
-    .map((track) => renderAgentTrack(track, activeSearch))
+  reconcileOpenSubagentPanels(tracks);
+
+  const mainTrack = tracks.find((track) => track.id === "main") || tracks[0];
+  const openSubagentTracks = getOpenSubagentTracks(tracks);
+  const panelsHtml = openSubagentTracks
+    .map((track) => renderAgentTrack(track, activeSearch, { variant: "panel" }))
     .join("");
 
   timeline.innerHTML = `
-        <div class="agent-track-lanes" id="agentTrackLanes">
-            ${tracksHtml}
+        <div class="agent-workspace" id="agentWorkspace" data-open-panel-count="${openSubagentTracks.length}">
+            ${renderAgentTrack(mainTrack, activeSearch, { variant: "main" })}
+            ${
+              openSubagentTracks.length
+                ? `
+                    <div class="subagent-panel-rack" id="subagentPanelRack" aria-label="Open subagent panels">
+                        ${panelsHtml}
+                    </div>
+                `
+                : ""
+            }
         </div>
     `;
 

@@ -12,6 +12,10 @@ const conversationJs = fs.readFileSync(
   path.join(repoRoot, "app/static/js/conversation.js"),
   "utf8",
 );
+const conversationCss = fs.readFileSync(
+  path.join(repoRoot, "app/static/css/conversation.css"),
+  "utf8",
+);
 
 function assert(condition, message, details = {}) {
   if (!condition) {
@@ -26,14 +30,11 @@ function harnessHtml() {
     <html>
       <head>
         <meta charset="utf-8" />
+        <style>${conversationCss}</style>
         <style>
           #mainContent { height: 720px; overflow: auto; }
           #messageList { width: 320px; }
-          .agent-filter { display: flex; gap: 8px; overflow-x: auto; }
           .agent-filter-option { flex: 0 0 auto; min-width: 180px; }
-          .message-item.active { outline: 2px solid red; }
-          .tool-body { display: none; }
-          .tool-body.expanded { display: block; }
         </style>
         <script>
           window.marked = { setOptions() {}, parse(value) { return String(value || ""); } };
@@ -150,6 +151,29 @@ async function readIdentityState(page, selector) {
         document.querySelector(
           '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option.active',
         )?.dataset.agentId || null,
+      workspace: {
+        openPanelCount: Number(
+          document.getElementById("agentWorkspace")?.dataset.openPanelCount ||
+            0,
+        ),
+        mainStreamCount: document.querySelectorAll(".agent-main-stream").length,
+        panelRackCount: document.querySelectorAll(".subagent-panel-rack")
+          .length,
+        subagentPanelCount: document.querySelectorAll(".subagent-panel").length,
+        mainTrackIds: Array.from(
+          document.querySelectorAll(".agent-main-stream"),
+        ).map((track) => track.dataset.agentId || null),
+        panelTrackIds: Array.from(
+          document.querySelectorAll(".subagent-panel"),
+        ).map((track) => track.dataset.agentId || null),
+      },
+      selectedAgentChips: Array.from(
+        document.querySelectorAll(".selected-agent-chip"),
+      ).map((chip) => ({
+        agentId: chip.dataset.agentId || null,
+        active: chip.classList.contains("active"),
+        text: chip.textContent.replace(/\s+/g, " ").trim(),
+      })),
       agentFilters: Array.from(document.querySelectorAll(".agent-filter")).map(
         (filter) => ({
           location: filter.dataset.agentFilterLocation || null,
@@ -161,6 +185,8 @@ async function readIdentityState(page, selector) {
             agentId: option.dataset.agentId || null,
             kind: option.dataset.trackKind || null,
             active: option.classList.contains("active"),
+            panelOpen: option.dataset.panelOpen === "true",
+            ariaPressed: option.getAttribute("aria-pressed"),
             text: option.textContent.replace(/\s+/g, " ").trim(),
           })),
         }),
@@ -169,7 +195,10 @@ async function readIdentityState(page, selector) {
         (el) => ({
           agentId: el.dataset.agentId || null,
           kind: el.dataset.trackKind || null,
+          panelOpen: el.dataset.panelOpen === "true",
           active: el.classList.contains("active"),
+          model:
+            el.querySelector(".agent-track-model")?.dataset.trackModel || null,
           messageIds: Array.from(
             el.querySelectorAll(".agent-track-message"),
           ).map((message) => message.id),
@@ -288,6 +317,25 @@ async function readIdentityState(page, selector) {
           text: el.textContent.replace(/\s+/g, " ").trim(),
         }),
       ),
+      reasoningBlocks: Array.from(
+        document.querySelectorAll(".part-reasoning"),
+      ).map((el) => ({
+        tagName: el.tagName,
+        open: el.hasAttribute("open"),
+        collapsed: el.dataset.reasoningCollapsed || null,
+        text: el.textContent.replace(/\s+/g, " ").trim(),
+      })),
+      claudeCodeBlocks: Array.from(
+        document.querySelectorAll(".claude-code-block"),
+      ).map((el) => ({
+        kind: el.dataset.claudeCodeBlock || null,
+        text: el.textContent.replace(/\s+/g, " ").trim(),
+      })),
+      customClaudeElements: Array.from(
+        document.querySelectorAll(
+          ".part-text task, .part-text task_result, .part-text path, .part-text content, .part-text shell_metadata",
+        ),
+      ).map((el) => el.tagName.toLowerCase()),
     };
   }, selector);
 }
@@ -316,6 +364,215 @@ function taskPart(id, sessionId, prompt) {
       output: `${prompt} done`,
     },
   };
+}
+
+async function verifyAgentStreamPresentation(browser) {
+  const page = await setupPage(browser);
+  const claudeText = [
+    "Before block.",
+    '<task id="abc" state="completed">',
+    "<task_result>",
+    "Claude task output",
+    "</task_result>",
+    "</task>",
+    "After block.",
+  ].join("\n");
+  const firstTranscript = {
+    task_part_id: "first-task",
+    agent_type: "general",
+    summary: {
+      id: "first-session",
+      title: "First model panel",
+      model: "claude-sonnet-4",
+    },
+    messages: [
+      {
+        role: "assistant",
+        modelID: "claude-sonnet-4",
+        time_created: "2026-06-18T00:01:00Z",
+        finish: "stop",
+        parts: [
+          { type: "reasoning", text: "Internal chain of action." },
+          { type: "text", text: claudeText },
+        ],
+      },
+    ],
+    subagent_transcripts: [],
+  };
+  const secondTranscript = {
+    task_part_id: "second-task",
+    agent_type: "general",
+    summary: {
+      id: "second-session",
+      title: "Second model panel",
+      model: "deepseek-v4-pro",
+    },
+    messages: [
+      {
+        role: "assistant",
+        modelID: "deepseek-v4-pro",
+        time_created: "2026-06-18T00:02:00Z",
+        finish: "stop",
+        parts: [{ type: "text", text: "second answer" }],
+      },
+    ],
+    subagent_transcripts: [],
+  };
+  const extraTranscripts = Array.from({ length: 6 }, (_, index) => ({
+    task_part_id: `extra-task-${index}`,
+    agent_type: "general",
+    summary: {
+      id: `extra-session-${index}`,
+      title: `Extra long titled panel ${index + 1} that must not overlap neighboring panel close controls`,
+      model: "k2p7",
+    },
+    messages: [
+      {
+        role: "assistant",
+        modelID: "k2p7",
+        time_created: `2026-06-18T00:${String(index + 3).padStart(2, "0")}:00Z`,
+        finish: "stop",
+        parts: [{ type: "text", text: `extra answer ${index + 1}` }],
+      },
+    ],
+    subagent_transcripts: [],
+  }));
+
+  await runSyntheticSession(page, {
+    id: "agent-stream-presentation",
+    messages: [
+      {
+        role: "assistant",
+        modelID: "main-model-a",
+        time_created: "2026-06-18T00:00:00Z",
+        finish: "tool-calls",
+        parts: [
+          { type: "reasoning", text: "Main stream thinking." },
+          taskPart("first-task", "first-session", "first"),
+          taskPart("second-task", "second-session", "second"),
+          ...extraTranscripts.map((transcript, index) =>
+            taskPart(
+              `extra-task-${index}`,
+              transcript.summary.id,
+              `extra ${index + 1}`,
+            ),
+          ),
+        ],
+      },
+    ],
+    subagent_transcripts: [
+      firstTranscript,
+      secondTranscript,
+      ...extraTranscripts,
+    ],
+  });
+
+  const firstOption = page
+    .locator(
+      '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option[data-track-kind="subagent"]',
+    )
+    .nth(0);
+  const secondOption = page
+    .locator(
+      '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option[data-track-kind="subagent"]',
+    )
+    .nth(1);
+  const firstAgentId = await firstOption.getAttribute("data-agent-id");
+  const secondAgentId = await secondOption.getAttribute("data-agent-id");
+  await firstOption.click();
+  await secondOption.click();
+  await page.waitForTimeout(100);
+
+  const openedState = await readIdentityState(page, ".message-item");
+  assert(
+    openedState.workspace.mainStreamCount === 1 &&
+      openedState.workspace.subagentPanelCount === 2 &&
+      openedState.workspace.openPanelCount === 2 &&
+      openedState.workspace.mainTrackIds[0] === "main" &&
+      openedState.workspace.panelTrackIds.includes(firstAgentId) &&
+      openedState.workspace.panelTrackIds.includes(secondAgentId),
+    "clicking multiple subagents should keep main stream and open multiple right panels",
+    openedState,
+  );
+  assert(
+    openedState.tracks.some(
+      (track) =>
+        track.agentId === firstAgentId && track.model === "claude-sonnet-4",
+    ) &&
+      openedState.tracks.some(
+        (track) =>
+          track.agentId === secondAgentId && track.model === "deepseek-v4-pro",
+      ),
+    "subagent panels should display their fixed model in the stream header",
+    openedState,
+  );
+  assert(
+    openedState.reasoningBlocks.length === 2 &&
+      openedState.reasoningBlocks.every(
+        (block) =>
+          block.tagName === "DETAILS" &&
+          !block.open &&
+          block.collapsed === "true",
+      ),
+    "reasoning blocks should render as collapsed details by default",
+    openedState,
+  );
+  assert(
+    openedState.claudeCodeBlocks.length === 1 &&
+      openedState.claudeCodeBlocks[0].kind === "task" &&
+      openedState.claudeCodeBlocks[0].text.includes("<task") &&
+      openedState.claudeCodeBlocks[0].text.includes("<task_result>") &&
+      openedState.customClaudeElements.length === 0,
+    "assistant Claude Code block should render as escaped code, not custom HTML elements",
+    openedState,
+  );
+
+  await page.locator(".part-reasoning summary").first().click();
+  await page.waitForTimeout(50);
+  const expandedReasoning = await readIdentityState(page, ".message-item");
+  assert(
+    expandedReasoning.reasoningBlocks.some((block) => block.open),
+    "reasoning details should expand when clicked",
+    expandedReasoning,
+  );
+
+  for (let index = 2; index < 8; index += 1) {
+    await page
+      .locator(
+        '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option[data-track-kind="subagent"]',
+      )
+      .nth(index)
+      .click();
+    await page.waitForTimeout(50);
+  }
+  const manyPanelsState = await readIdentityState(page, ".message-item");
+  assert(
+    manyPanelsState.workspace.subagentPanelCount === 8 &&
+      manyPanelsState.workspace.openPanelCount === 8,
+    "opening many long-titled subagent panels should keep every panel mounted",
+    manyPanelsState,
+  );
+
+  await page
+    .locator(
+      `.subagent-panel[data-agent-id="${firstAgentId}"] .agent-panel-close`,
+    )
+    .click();
+  await page.waitForTimeout(100);
+  const afterClose = await readIdentityState(page, ".message-item");
+  assert(
+    afterClose.workspace.subagentPanelCount === 7 &&
+      !afterClose.workspace.panelTrackIds.includes(firstAgentId) &&
+      afterClose.workspace.panelTrackIds.includes(secondAgentId) &&
+      !afterClose.agentFilters[0].options.find(
+        (option) => option.agentId === firstAgentId,
+      )?.panelOpen,
+    "closing a subagent panel should deselect it without closing other panels",
+    afterClose,
+  );
+
+  await page.close();
+  return { openedState, expandedReasoning, manyPanelsState, afterClose };
 }
 
 async function verifyRepeatedTopLevelTranscript(browser) {
@@ -367,6 +624,9 @@ async function verifyRepeatedTopLevelTranscript(browser) {
   const subagentTrackIds = state.tracks
     .filter((track) => track.kind === "subagent")
     .map((track) => track.agentId);
+  const navSubagentIds = state.agentFilters[0].options
+    .filter((option) => option.kind === "subagent")
+    .map((option) => option.agentId);
   assert(
     state.duplicateIds.length === 0,
     "top-level repeat created duplicate DOM ids",
@@ -388,15 +648,24 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     state,
   );
   assert(
-    state.tracks.length === 3 &&
-      subagentTrackIds.length === 2 &&
-      new Set(subagentTrackIds).size === 2,
-    "top-level repeat did not create distinct subagent tracks",
+    state.agentFilters.length === 1 &&
+      navSubagentIds.length === 2 &&
+      new Set(navSubagentIds).size === 2,
+    "top-level repeat did not expose distinct subagent navigation options",
     state,
   );
   assert(
-    state.agentFilters.length === 1 &&
-      state.agentFilters.every((filter) => filter.options.length === 3) &&
+    state.tracks.length === 2 &&
+      state.workspace.mainStreamCount === 1 &&
+      state.workspace.subagentPanelCount === 1 &&
+      subagentTrackIds.length === 1 &&
+      subagentTrackIds[0] === selectedAgentId &&
+      state.workspace.panelTrackIds[0] === selectedAgentId,
+    "top-level repeat should render the main stream plus only the opened subagent panel",
+    state,
+  );
+  assert(
+    state.agentFilters[0].options.length === 3 &&
       state.agentFilters.every(
         (filter) =>
           filter.options.filter((option) => option.active).length === 1,
@@ -415,9 +684,22 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     state,
   );
   assert(
-    state.connectors.length === 2 &&
+    state.workspace.openPanelCount === 1 &&
+      state.selectedAgentChips.length === 1 &&
+      state.selectedAgentChips[0].agentId === selectedAgentId &&
+      state.agentFilters[0].options.some(
+        (option) =>
+          option.agentId === selectedAgentId &&
+          option.panelOpen &&
+          option.ariaPressed === "true",
+      ),
+    "top-level opened subagent panel state is not reflected in the sidebar",
+    state,
+  );
+  assert(
+    state.connectors.length === 1 &&
       state.connectors.every(hasAlignedConnector),
-    "top-level connectors do not align first messages to parent messages",
+    "top-level opened panel connector does not align first message to parent message",
     state,
   );
   assert(
@@ -466,11 +748,11 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     state,
   );
   assert(
-    state.alignmentSpacers.length === 2 &&
+    state.alignmentSpacers.length === 1 &&
       state.alignmentSpacers.every(
         (spacer) => spacer.status === "aligned" && spacer.connectorHeight > 0,
       ),
-    "top-level subagent tracks did not record connector-aware alignment spacers",
+    "top-level opened subagent panel did not record connector-aware alignment spacers",
     state,
   );
   await page.close();
@@ -538,6 +820,9 @@ async function verifyRepeatedNestedTranscript(browser) {
   const childTrackIds = state.tracks
     .filter((track) => track.agentId?.includes("child-session"))
     .map((track) => track.agentId);
+  const navChildIds = state.agentFilters[0].options
+    .filter((option) => option.agentId?.includes("child-session"))
+    .map((option) => option.agentId);
   assert(
     state.duplicateIds.length === 0,
     "nested repeat created duplicate DOM ids",
@@ -559,14 +844,22 @@ async function verifyRepeatedNestedTranscript(browser) {
     state,
   );
   assert(
-    state.tracks.length === 4 &&
-      childTrackIds.length === 2 &&
-      new Set(childTrackIds).size === 2,
-    "nested repeat did not create distinct child subagent tracks",
+    navChildIds.length === 2 && new Set(navChildIds).size === 2,
+    "nested repeat did not expose distinct child subagent navigation options",
     state,
   );
   assert(
-    state.connectors.length === 3 &&
+    state.tracks.length === 3 &&
+      state.workspace.mainStreamCount === 1 &&
+      state.workspace.subagentPanelCount === 2 &&
+      state.workspace.openPanelCount === 2 &&
+      childTrackIds.length === 1 &&
+      childTrackIds[0] === selectedAgentId,
+    "nested repeat should render main plus the selected child panel and its parent panel",
+    state,
+  );
+  assert(
+    state.connectors.length === 2 &&
       state.connectors.every(hasAlignedConnector),
     "nested connectors do not align first messages to parent messages",
     state,
@@ -582,6 +875,12 @@ async function verifyRepeatedNestedTranscript(browser) {
       state.agentFilters[0].options.filter((option) => option.active).length ===
         1,
     "nested sidebar agent filter did not expose exactly one selected track",
+    state,
+  );
+  assert(
+    state.selectedAgentChips.length === 2 &&
+      state.selectedAgentChips.some((chip) => chip.agentId === selectedAgentId),
+    "nested selected child should open both parent and child sidebar chips",
     state,
   );
   assert(
@@ -629,7 +928,7 @@ async function verifyRepeatedNestedTranscript(browser) {
     state,
   );
   assert(
-    state.alignmentSpacers.length === 3 &&
+    state.alignmentSpacers.length === 2 &&
       state.alignmentSpacers.every(
         (spacer) => spacer.status === "aligned" && spacer.connectorHeight > 0,
       ),
@@ -816,6 +1115,13 @@ async function verifyConnectorAlignmentAfterExpansion(browser) {
     subagent_transcripts: [firstTranscript, secondTranscript],
   });
 
+  const subagentOptions = page.locator(
+    '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option[data-track-kind="subagent"]',
+  );
+  await subagentOptions.nth(0).click();
+  await subagentOptions.nth(1).click();
+  await page.waitForTimeout(100);
+
   const beforeExpansion = await readIdentityState(page, ".message-item");
   const firstToolButton = page
     .locator('[data-tool-result-button="msg0__tool0-first-task"]')
@@ -942,6 +1248,7 @@ async function verifyAgentFilterScrollPreserved(browser) {
 const browser = await chromium.launch({ headless: true });
 try {
   const results = {
+    agentStreamPresentation: await verifyAgentStreamPresentation(browser),
     repeatedTopLevelTranscript: await verifyRepeatedTopLevelTranscript(browser),
     repeatedNestedTranscript: await verifyRepeatedNestedTranscript(browser),
     toolBodyIds: await verifyToolBodyIds(browser),
