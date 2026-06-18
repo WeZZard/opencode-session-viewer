@@ -813,6 +813,12 @@ function setActiveSidebarAgentMessage(agentId, messageIndex) {
   });
 }
 
+function setActiveSidebarActivity(activityPath) {
+  document.querySelectorAll(".message-item").forEach((item) => {
+    item.classList.toggle("active", item.dataset.activityPath === activityPath);
+  });
+}
+
 // Scroll to message
 function setActiveSidebarMessage(idx) {
   setActiveSidebarAgentMessage("main", idx);
@@ -871,8 +877,33 @@ function scrollElementHorizontallyIntoContainer(el, container) {
   }
 
   if (Math.abs(deltaLeft) > 1) {
-    container.scrollLeft = Math.max(0, container.scrollLeft + deltaLeft);
+    const scrollBounds = getHorizontalScrollBounds(container);
+    container.scrollLeft = clamp(
+      container.scrollLeft + deltaLeft,
+      scrollBounds.min,
+      scrollBounds.max,
+    );
   }
+}
+
+function getHorizontalScrollBounds(container) {
+  if (!container) return { min: 0, max: 0 };
+
+  const maxDistance = Math.max(
+    0,
+    container.scrollWidth - container.clientWidth,
+  );
+  const styles = window.getComputedStyle(container);
+  if (styles.flexDirection === "row-reverse") {
+    return { min: -maxDistance, max: 0 };
+  }
+
+  return { min: 0, max: maxDistance };
+}
+
+function scrollHorizontalContainerToRightEdge(container) {
+  const scrollBounds = getHorizontalScrollBounds(container);
+  container.scrollLeft = scrollBounds.max;
 }
 
 function scrollTranscriptElementIntoView(
@@ -1044,14 +1075,18 @@ function showToolResult(activityPath, agentId = "", messageIndex = null) {
   if (!el) return;
 
   const hasParentMessage = agentId && Number.isFinite(messageIndex);
-  sidebarNavigationLock = hasParentMessage
-    ? { kind: "agent-message", agentId, messageIndex }
-    : null;
+  sidebarNavigationLock = activityPath
+    ? { kind: "activity", activityPath, agentId, messageIndex }
+    : hasParentMessage
+      ? { kind: "agent-message", agentId, messageIndex }
+      : null;
   clearHighlightedTargets();
 
   scrollTranscriptElementIntoView(el);
   el.classList.add("highlighted");
-  if (hasParentMessage) {
+  if (activityPath) {
+    setActiveSidebarActivity(activityPath);
+  } else if (hasParentMessage) {
     setActiveSidebarAgentMessage(agentId, messageIndex);
   }
 
@@ -1071,15 +1106,19 @@ function toggleToolResult(activityPath, agentId = "", messageIndex = null) {
   const el = document.getElementById(getActivityDomId(activityPath));
   if (!el) return;
 
-  if (el.classList.contains("expanded")) {
-    setToolResultExpanded(activityPath, false);
-    return;
-  }
-
   const parsedMessageIndex =
     messageIndex === null || messageIndex === undefined
       ? null
       : Number(messageIndex);
+
+  if (el.classList.contains("expanded")) {
+    setToolResultExpanded(activityPath, false);
+    if (agentId && Number.isFinite(parsedMessageIndex)) {
+      setActiveSidebarAgentMessage(agentId, parsedMessageIndex);
+    }
+    return;
+  }
+
   showToolResult(
     activityPath,
     agentId,
@@ -1399,9 +1438,22 @@ function renderSidebar() {
         } else {
           previewHtml = esc(item.preview);
         }
+        const itemClasses = [
+          "message-item",
+          item.kind === "tool" ? "tool-result-item" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const activityAttr = item.activityPath
+          ? ` data-activity-path="${escAttr(item.activityPath)}"`
+          : "";
+        const clickHandler =
+          item.kind === "tool"
+            ? `showToolResult('${escAttr(item.activityPath)}', '${escAttr(item.agentId)}', ${item.index})`
+            : `scrollToAgentMessage(this.dataset.agentId, Number(this.dataset.messageIndex))`;
 
         return `
-                <div class="message-item" data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.index}" data-index="${item.parentIndex}" onclick="scrollToAgentMessage(this.dataset.agentId, Number(this.dataset.messageIndex))">
+                <div class="${itemClasses}" data-sidebar-item-kind="${escAttr(item.kind)}" data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.index}" data-index="${item.parentIndex}"${activityAttr} onclick="${clickHandler}">
                     <div class="message-item-header">
                         <span class="role-badge ${item.role}">${item.role}</span>
                         <span class="message-time">${formatTime(item.time)}</span>
@@ -1417,7 +1469,9 @@ function renderSidebar() {
 }
 
 function restoreSidebarActiveState() {
-  if (sidebarNavigationLock?.kind === "agent-message") {
+  if (sidebarNavigationLock?.kind === "activity") {
+    setActiveSidebarActivity(sidebarNavigationLock.activityPath);
+  } else if (sidebarNavigationLock?.kind === "agent-message") {
     setActiveSidebarAgentMessage(
       sidebarNavigationLock.agentId,
       sidebarNavigationLock.messageIndex,
@@ -1488,6 +1542,61 @@ function shouldShowMessageInTranscriptList(msg, activeSearch, subagents) {
   return true;
 }
 
+function shouldShowMessageInSidebar(msg, activeSearch, subagents) {
+  if (activeSearch && messageMatchesSearch(msg, activeSearch, subagents)) {
+    return true;
+  }
+  if (
+    isIntermediateStep(msg) &&
+    !messageHasSubagentTranscript(msg, subagents)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function hasRecordedToolResult(part) {
+  const state = part?.state || {};
+  if (!state || typeof state !== "object") return false;
+  return state.output !== undefined || state.error !== undefined;
+}
+
+function getToolResultSidebarPreview(part) {
+  const toolName = part.tool || "tool";
+  const state = part.state || {};
+  const title = state.title || state.status || toolName;
+  return compactText(`Tool result (${toolName}): ${title}`);
+}
+
+function buildSidebarToolItems(msg, track, messageIndex, parentIndex) {
+  const subagentPathSegments =
+    track.id === "main" ? [] : [...track.pathSegments, `msg${messageIndex}`];
+
+  return (msg.parts || [])
+    .map((part, partIndex) => {
+      if (part.type !== "tool" || !hasRecordedToolResult(part)) return null;
+
+      const activityPath = getToolActivityPath(part, {
+        parentIndex,
+        subagentPathSegments,
+        partIndex,
+      });
+      const preview = getToolResultSidebarPreview(part);
+      return {
+        kind: "tool",
+        agentId: track.id,
+        role: "tool",
+        time: part.time_created || msg.time_created,
+        preview,
+        text: getToolText(part) || preview,
+        index: messageIndex,
+        parentIndex,
+        activityPath,
+      };
+    })
+    .filter(Boolean);
+}
+
 function buildSidebarItems(activeSearch) {
   const items = [];
   const track = ensureSelectedAgentTrack();
@@ -1501,16 +1610,20 @@ function buildSidebarItems(activeSearch) {
       subagents,
     );
     if (showMessage) {
-      items.push({
-        kind: "message",
-        agentId: track.id,
-        role: msg.role,
-        time: msg.time_created,
-        preview: getPreview(msg),
-        text: getMessageSearchText(msg, subagents) || getPreview(msg),
-        index,
-        parentIndex: track.id === "main" ? index : track.parentIndex || 0,
-      });
+      const parentIndex = track.id === "main" ? index : track.parentIndex || 0;
+      if (shouldShowMessageInSidebar(msg, activeSearch, subagents)) {
+        items.push({
+          kind: "message",
+          agentId: track.id,
+          role: msg.role,
+          time: msg.time_created,
+          preview: getPreview(msg),
+          text: getMessageSearchText(msg, subagents) || getPreview(msg),
+          index,
+          parentIndex,
+        });
+      }
+      items.push(...buildSidebarToolItems(msg, track, index, parentIndex));
     }
   });
 
@@ -2150,6 +2263,7 @@ function getSubagentPanelOverlayMetrics(overlay, openPanelCount) {
   const targetWidth =
     openPanelCount * panelWidth + Math.max(0, openPanelCount - 1) * panelGap;
   const maxWidth = maxAvailableWidth;
+  const canLayoutPanel = maxWidth >= panelMinWidth;
   const minWidth = Math.min(panelMinWidth, maxWidth);
   const autoMaxWidth = Math.min(
     wrapperWidth * 0.72,
@@ -2166,10 +2280,22 @@ function getSubagentPanelOverlayMetrics(overlay, openPanelCount) {
     panelGap,
     panelMinWidth,
     mainMinWidth,
+    canLayoutPanel,
     minWidth,
     maxWidth,
     autoWidth,
   };
+}
+
+function updateSubagentPanelLayoutReadyState(overlay, metrics) {
+  const canLayoutPanel = Boolean(metrics?.canLayoutPanel);
+  const wrapper = overlay.closest(".main-wrapper");
+  overlay.dataset.layoutReady = canLayoutPanel ? "true" : "false";
+  if (wrapper) {
+    wrapper.dataset.subagentPanelLayoutReady = canLayoutPanel
+      ? "true"
+      : "false";
+  }
 }
 
 function updateSubagentSeparatorState(overlay, width, metrics) {
@@ -2177,6 +2303,14 @@ function updateSubagentSeparatorState(overlay, width, metrics) {
     .closest(".main-wrapper")
     ?.querySelector(".agent-stream-separator");
   if (!separator || !metrics) return;
+
+  if (!metrics.canLayoutPanel) {
+    separator.removeAttribute("aria-valuemin");
+    separator.removeAttribute("aria-valuemax");
+    separator.removeAttribute("aria-valuenow");
+    separator.removeAttribute("aria-valuetext");
+    return;
+  }
 
   separator.setAttribute("aria-valuemin", String(Math.round(metrics.minWidth)));
   separator.setAttribute("aria-valuemax", String(Math.round(metrics.maxWidth)));
@@ -2189,6 +2323,7 @@ function updateSubagentSeparatorState(overlay, width, metrics) {
 
 function updateSubagentPanelOverlayWidth(overlay, openPanelCount) {
   const metrics = getSubagentPanelOverlayMetrics(overlay, openPanelCount);
+  updateSubagentPanelLayoutReadyState(overlay, metrics);
 
   if (!metrics) {
     overlay.style.setProperty("--subagent-panel-rack-width", "0px");
@@ -2196,10 +2331,16 @@ function updateSubagentPanelOverlayWidth(overlay, openPanelCount) {
   }
 
   const hasManualWidth = Number.isFinite(subagentPanelRackWidthOverride);
-  const nextWidth = hasManualWidth
-    ? clamp(subagentPanelRackWidthOverride, metrics.minWidth, metrics.maxWidth)
-    : metrics.autoWidth;
-  if (hasManualWidth) {
+  const nextWidth = metrics.canLayoutPanel
+    ? hasManualWidth
+      ? clamp(
+          subagentPanelRackWidthOverride,
+          metrics.minWidth,
+          metrics.maxWidth,
+        )
+      : metrics.autoWidth
+    : 0;
+  if (hasManualWidth && metrics.canLayoutPanel) {
     subagentPanelRackWidthOverride = nextWidth;
   }
   overlay.style.setProperty(
@@ -2227,7 +2368,7 @@ function setSubagentPanelRackWidthOverride(width, options = {}) {
 
   const openPanelCount = Number(overlay.dataset.openPanelCount || 0);
   const metrics = getSubagentPanelOverlayMetrics(overlay, openPanelCount);
-  if (!metrics) return null;
+  if (!metrics || !metrics.canLayoutPanel) return null;
 
   const nextWidth = clamp(width, metrics.minWidth, metrics.maxWidth);
   subagentPanelRackWidthOverride = nextWidth;
@@ -2249,7 +2390,7 @@ function startSubagentSeparatorResize(event) {
   const metrics = overlay
     ? getSubagentPanelOverlayMetrics(overlay, openPanelCount)
     : null;
-  if (!overlay || !metrics) return;
+  if (!overlay || !metrics || !metrics.canLayoutPanel) return;
 
   event.preventDefault();
   event.stopPropagation();
@@ -2336,7 +2477,7 @@ function handleSubagentSeparatorKeydown(event) {
   const metrics = overlay
     ? getSubagentPanelOverlayMetrics(overlay, openPanelCount)
     : null;
-  if (!overlay || !metrics) return;
+  if (!overlay || !metrics || !metrics.canLayoutPanel) return;
 
   const currentWidth = overlay.getBoundingClientRect().width;
   const step = event.shiftKey ? 80 : 24;
@@ -2403,7 +2544,7 @@ function renderFloatingSubagentPanels(openSubagentTracks, activeSearch) {
     updateSubagentPanelOverlayWidth(overlay, openSubagentTracks.length);
     const rack = document.getElementById("subagentPanelRack");
     if (rack) {
-      rack.scrollLeft = Math.max(0, rack.scrollWidth - rack.clientWidth);
+      scrollHorizontalContainerToRightEdge(rack);
     }
     syncSubagentPanelsToMain();
   });

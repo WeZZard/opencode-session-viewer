@@ -86,9 +86,9 @@ function harnessHtml() {
     </html>`;
 }
 
-async function setupPage(browser) {
+async function setupPage(browser, viewport = { width: 1440, height: 1000 }) {
   const page = await browser.newPage({
-    viewport: { width: 1440, height: 1000 },
+    viewport,
   });
   await page.setContent(harnessHtml(), { waitUntil: "domcontentloaded" });
   await page.addScriptTag({ content: conversationJs });
@@ -190,6 +190,9 @@ async function readIdentityState(page, selector) {
           document.getElementById("subagentPanelOverlay")?.dataset
             .openPanelCount || 0,
         ),
+        subagentPanelLayoutReady:
+          document.querySelector(".main-wrapper")?.dataset
+            .subagentPanelLayoutReady || null,
         mainStreamCount: document.querySelectorAll(".agent-main-stream").length,
         panelRackCount: document.querySelectorAll(".subagent-panel-rack")
           .length,
@@ -218,6 +221,10 @@ async function readIdentityState(page, selector) {
         ).map((panel) => rectOf(panel)),
         rackScrollLeft:
           document.getElementById("subagentPanelRack")?.scrollLeft ?? null,
+        rackFlexDirection: (() => {
+          const rack = document.getElementById("subagentPanelRack");
+          return rack ? window.getComputedStyle(rack).flexDirection : null;
+        })(),
         rackClientWidth:
           document.getElementById("subagentPanelRack")?.clientWidth ?? null,
         rackScrollWidth:
@@ -686,6 +693,15 @@ async function verifyAgentStreamPresentation(browser) {
   const rectCenter = (rect) => (rect.left + rect.right) / 2;
   const nearlyEqual = (left, right, tolerance = 1) =>
     Math.abs(left - right) <= tolerance;
+  const rectInside = (inner, outer, tolerance = 1) =>
+    inner.left >= outer.left - tolerance &&
+    inner.right <= outer.right + tolerance;
+  const panelsFlowRightToLeft = (state) =>
+    state.workspace.rackFlexDirection === "row-reverse" &&
+    state.workspace.panelRects.every((rect, index, rects) => {
+      if (index === 0) return true;
+      return rect.right < rects[index - 1].left;
+    });
   const separatorShowsSplit = (state) => {
     const separator = state.workspace.separator;
     const rect = separator.rect;
@@ -695,6 +711,7 @@ async function verifyAgentStreamPresentation(browser) {
     return (
       separator.exists &&
       separator.role === "separator" &&
+      state.workspace.subagentPanelLayoutReady === "true" &&
       separator.ariaOrientation === "vertical" &&
       separator.ariaLabel &&
       separator.tabIndex === 0 &&
@@ -765,6 +782,7 @@ async function verifyAgentStreamPresentation(browser) {
   assert(
     firstOpenState.workspace.subagentPanelCount === 1 &&
       firstOpenState.workspace.panelTrackIds[0] === firstAgentId &&
+      firstOpenState.workspace.rackFlexDirection === "row-reverse" &&
       firstOpenState.workspace.mainContentRect.width <
         initialState.workspace.mainContentRect.width &&
       separatorShowsSplit(firstOpenState) &&
@@ -788,6 +806,7 @@ async function verifyAgentStreamPresentation(browser) {
       openedState.workspace.overlayOpenPanelCount === 2 &&
       openedState.workspace.panelsInsideWorkspace === 0 &&
       separatorShowsSplit(openedState) &&
+      panelsFlowRightToLeft(openedState) &&
       openedState.workspace.mainTrackIds[0] === "main" &&
       openedState.workspace.panelTrackIds.includes(firstAgentId) &&
       openedState.workspace.panelTrackIds.includes(secondAgentId),
@@ -799,14 +818,14 @@ async function verifyAgentStreamPresentation(browser) {
       firstOpenState.workspace.mainContentRect.width &&
       openedState.workspace.panelTrackIds[0] === firstAgentId &&
       openedState.workspace.panelTrackIds[1] === secondAgentId &&
-      openedState.workspace.panelRects[0].left <
-        firstOpenState.workspace.panelRects[0].left &&
-      nearlyEqual(
-        openedState.workspace.panelRects[1].right,
-        openedState.workspace.overlayRect.right,
+      openedState.workspace.panelRects[0].left >
+        openedState.workspace.panelRects[1].right &&
+      rectInside(
+        openedState.workspace.panelRects[1],
+        openedState.workspace.overlayRect,
         3,
       ),
-    "opening a second subagent should append it on the right and push the first panel left",
+    "opening a second subagent should lay it to the left while preserving right-to-left panel order",
     { firstOpenState, openedState },
   );
   assert(
@@ -896,6 +915,7 @@ async function verifyAgentStreamPresentation(browser) {
       manyPanelsState.workspace.overlayOpenPanelCount === 8 &&
       manyPanelsState.workspace.panelsInsideWorkspace === 0 &&
       separatorShowsSplit(manyPanelsState) &&
+      panelsFlowRightToLeft(manyPanelsState) &&
       manyPanelsState.workspace.rackScrollWidth >
         manyPanelsState.workspace.rackClientWidth,
     "opening many long-titled subagent panels should keep every panel mounted behind the split separator",
@@ -965,7 +985,12 @@ async function verifyAgentStreamPresentation(browser) {
   await page.evaluate(() => {
     const rack = document.getElementById("subagentPanelRack");
     if (rack) {
-      rack.scrollLeft = Math.min(120, rack.scrollWidth - rack.clientWidth);
+      const maxDistance = Math.max(0, rack.scrollWidth - rack.clientWidth);
+      const direction = window.getComputedStyle(rack).flexDirection;
+      rack.scrollLeft =
+        direction === "row-reverse"
+          ? -Math.min(120, maxDistance)
+          : Math.min(120, maxDistance);
     }
     const main = document.getElementById("mainContent");
     if (main) {
@@ -997,7 +1022,7 @@ async function verifyAgentStreamPresentation(browser) {
     syncedScrollState,
   );
   assert(
-    syncedScrollState.workspace.rackScrollLeft > 0 &&
+    Math.abs(syncedScrollState.workspace.rackScrollLeft) > 0 &&
       syncedScrollState.workspace.mainScrollLeft === 0 &&
       syncedScrollState.workspace.panelScrollLefts.every((left) => left === 0),
     "vertical scroll synchronization should not synchronize horizontal scroll positions",
@@ -1024,6 +1049,58 @@ async function verifyAgentStreamPresentation(browser) {
 
   await page.close();
   return { openedState, expandedReasoning, manyPanelsState, afterClose };
+}
+
+async function verifySeparatorHiddenWhenPanelCannotLayout(browser) {
+  const page = await setupPage(browser, { width: 760, height: 1000 });
+  const transcript = {
+    task_part_id: "narrow-task",
+    agent_type: "general",
+    summary: { id: "narrow-session", title: "Narrow panel transcript" },
+    messages: [
+      baseMessage(
+        [{ type: "text", text: "narrow panel answer" }],
+        "stop",
+        "2026-06-18T00:01:00Z",
+      ),
+    ],
+    subagent_transcripts: [],
+  };
+
+  await runSyntheticSession(page, {
+    id: "narrow-layout",
+    messages: [
+      baseMessage(
+        [taskPart("narrow-task", "narrow-session", "narrow")],
+        "tool-calls",
+        "2026-06-18T00:00:00Z",
+      ),
+    ],
+    subagent_transcripts: [transcript],
+  });
+
+  await page
+    .locator(
+      '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option[data-track-kind="subagent"]',
+    )
+    .first()
+    .click();
+  await page.waitForTimeout(100);
+
+  const state = await readIdentityState(page, ".message-item");
+  assert(
+    state.workspace.subagentPanelCount === 1 &&
+      state.workspace.overlayOpenPanelCount === 1 &&
+      state.workspace.subagentPanelLayoutReady === "false" &&
+      state.workspace.overlayRect.width < 320 &&
+      state.workspace.separator.display === "none" &&
+      state.workspace.separator.ariaValueNow === null,
+    "separator should stay hidden when the floating panel cannot fit a minimum-width panel",
+    state,
+  );
+
+  await page.close();
+  return state;
 }
 
 async function verifyRepeatedTopLevelTranscript(browser) {
@@ -1457,9 +1534,12 @@ async function verifyToolBodyIds(browser) {
     "tool outputs should not render in a bottom activity stream",
     state,
   );
+  const toolRows = state.rows.filter((row) => row.activityPath);
   assert(
-    state.rows.every((row) => !row.activityPath),
-    "collapsed tool outputs should not appear as left navigation rows",
+    toolRows.length === 2 &&
+      new Set(toolRows.map((row) => row.activityPath)).size === 2 &&
+      toolRows.every((row) => row.agentId === "main"),
+    "collapsed tool outputs should render as distinct left navigation rows",
     state,
   );
   assert(
@@ -1487,11 +1567,9 @@ async function verifyToolBodyIds(browser) {
     expandedFromMessage,
   );
   assert(
-    expandedFromMessage.rows.every((row) => !row.activityPath) &&
-      expandedFromMessage.activeRows.length === 1 &&
-      expandedFromMessage.activeRows[0].agentId === "main" &&
-      expandedFromMessage.activeRows[0].messageIndex === "0",
-    "expanding one inline tool result should keep the left navigation on the parent message",
+    expandedFromMessage.activeRows.length === 1 &&
+      expandedFromMessage.activeRows[0].activityPath === "msg0__tool0-bash",
+    "expanding one inline tool result should activate its left navigation row",
     expandedFromMessage,
   );
 
@@ -1502,11 +1580,12 @@ async function verifyToolBodyIds(browser) {
     ".message-item",
   );
   assert(
-    expandedFromSecondMessage.rows.every((row) => !row.activityPath) &&
+    expandedFromSecondMessage.rows.filter((row) => row.activityPath).length ===
+      2 &&
       expandedFromSecondMessage.activeRows.length === 1 &&
-      expandedFromSecondMessage.activeRows[0].agentId === "main" &&
-      expandedFromSecondMessage.activeRows[0].messageIndex === "0",
-    "expanding a second inline tool result should not inject left navigation rows",
+      expandedFromSecondMessage.activeRows[0].activityPath ===
+        "msg0__tool1-bash",
+    "expanding a second inline tool result should activate the second result row without injecting rows",
     expandedFromSecondMessage,
   );
 
@@ -1525,18 +1604,30 @@ async function verifyToolBodyIds(browser) {
     "inline tool result buttons did not reveal both tool results",
     expandedFromSecondMessage,
   );
+  await page
+    .locator('.message-item[data-activity-path="msg0__tool0-bash"]')
+    .click();
+  await page.waitForTimeout(100);
+  const expandedFromSidebar = await readIdentityState(page, ".message-item");
+  assert(
+    expandedFromSidebar.activeRows.length === 1 &&
+      expandedFromSidebar.activeRows[0].activityPath === "msg0__tool0-bash" &&
+      expandedFromSidebar.toolActivities.some(
+        (activity) => activity.path === "msg0__tool0-bash" && activity.visible,
+      ),
+    "left navigation tool result row did not reveal and activate the linked result",
+    expandedFromSidebar,
+  );
   await page.locator('[data-tool-result-button="msg0__tool1-bash"]').click();
   await page.waitForTimeout(100);
   const collapsedSecondResult = await readIdentityState(page, ".message-item");
   assert(
-    collapsedSecondResult.rows.every((row) => !row.activityPath) &&
-      collapsedSecondResult.activeRows.length === 1 &&
-      collapsedSecondResult.activeRows[0].agentId === "main" &&
-      collapsedSecondResult.activeRows[0].messageIndex === "0" &&
+    collapsedSecondResult.rows.filter((row) => row.activityPath).length === 2 &&
+      collapsedSecondResult.activeRows.length === 0 &&
       collapsedSecondResult.toolActivities.filter(
         (activity) => activity.visible,
       ).length === 1,
-    "collapsing an inline tool result should leave the left navigation on the parent message",
+    "collapsing an inline tool result should keep navigation rows stable",
     collapsedSecondResult,
   );
   await page.close();
@@ -1725,6 +1816,8 @@ const browser = await chromium.launch({ headless: true });
 try {
   const results = {
     agentStreamPresentation: await verifyAgentStreamPresentation(browser),
+    separatorHiddenWhenPanelCannotLayout:
+      await verifySeparatorHiddenWhenPanelCannotLayout(browser),
     repeatedTopLevelTranscript: await verifyRepeatedTopLevelTranscript(browser),
     repeatedNestedTranscript: await verifyRepeatedNestedTranscript(browser),
     toolBodyIds: await verifyToolBodyIds(browser),
