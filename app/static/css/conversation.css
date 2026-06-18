@@ -441,6 +441,14 @@ body {
   overflow: hidden;
   margin-right: var(--viz-width, 44px);
   transition: margin-right 0.2s ease;
+  position: relative;
+  --main-stream-min-width: 760px;
+  --subagent-panel-max-width: 520px;
+  --subagent-panel-min-width: 320px;
+  --subagent-panel-right: 14px;
+  --timeline-inline-padding: 24px;
+  --agent-workspace-inline-padding: 2px;
+  --agent-stream-panel-gap: 16px;
 }
 
 /* Scrollable column — scrollbar appears at the far-right edge of main-wrapper */
@@ -460,15 +468,15 @@ body {
   width: 100%;
   max-width: none;
   margin: 0;
-  padding: 24px;
+  padding: var(--timeline-inline-padding);
 }
 
 .agent-workspace,
 .agent-track-lanes {
   display: flex;
   align-items: flex-start;
-  gap: 16px;
-  padding: 2px 2px 18px;
+  gap: var(--agent-stream-panel-gap);
+  padding: 2px var(--agent-workspace-inline-padding) 18px;
   min-width: 0;
 }
 
@@ -492,27 +500,56 @@ body {
 }
 
 .agent-main-stream {
-  flex: 1 1 760px;
-  min-width: min(620px, 100%);
+  flex: 0 0 min(var(--main-stream-min-width), 100%);
+  width: min(var(--main-stream-min-width), 100%);
+  min-width: min(var(--main-stream-min-width), 100%);
   max-width: none;
   opacity: 1;
 }
 
+.subagent-floating-panels {
+  position: absolute;
+  top: 24px;
+  right: var(--subagent-panel-right);
+  bottom: 24px;
+  left: min(
+    calc(100% - var(--subagent-panel-min-width) - var(--subagent-panel-right)),
+    calc(
+      var(--timeline-inline-padding) + var(--agent-workspace-inline-padding) +
+        var(--main-stream-min-width) + var(--agent-stream-panel-gap)
+    )
+  );
+  z-index: 12;
+  display: flex;
+  align-items: stretch;
+  pointer-events: none;
+}
+
 .subagent-panel-rack {
-  flex: 0 1 auto;
-  max-width: max(0px, calc(100% - 620px));
+  width: 100%;
   min-width: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 16px;
   overflow-x: auto;
-  padding: 0 2px 12px;
+  overflow-y: hidden;
+  padding: 0 2px 12px 0;
   scrollbar-width: thin;
+  pointer-events: auto;
 }
 
 .subagent-panel {
-  flex: 0 0 clamp(380px, 22vw, 520px);
-  max-width: 520px;
+  box-sizing: border-box;
+  flex: 0 0
+    clamp(
+      var(--subagent-panel-min-width),
+      22vw,
+      var(--subagent-panel-max-width)
+    );
+  max-width: var(--subagent-panel-max-width);
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
   border: 1px solid var(--border-color);
   border-left: 3px solid var(--accent-green);
   border-radius: 8px;

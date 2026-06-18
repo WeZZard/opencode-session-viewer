@@ -16,6 +16,7 @@ const openSubagentPanelIds = new Set();
 const expandedToolResults = new Set();
 let alignmentFrame = null;
 let sidebarAgentFilterScrollLeft = 0;
+let isSyncingAgentScroll = false;
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -821,14 +822,99 @@ function clearHighlightedTargets() {
     .forEach((el) => el.classList.remove("highlighted"));
 }
 
-function scrollToDomId(targetId, lock = null) {
+function scrollElementVerticallyIntoContainer(
+  el,
+  container,
+  { block = "start", topOffset = 0 } = {},
+) {
+  const elRect = el.getBoundingClientRect();
+  const containerRect = container.getBoundingClientRect();
+  let deltaTop = elRect.top - containerRect.top - topOffset;
+
+  if (block === "nearest") {
+    const visibleTop = containerRect.top + topOffset;
+    const visibleBottom = containerRect.bottom;
+    if (elRect.top < visibleTop) {
+      deltaTop = elRect.top - visibleTop;
+    } else if (elRect.bottom > visibleBottom) {
+      deltaTop = elRect.bottom - visibleBottom;
+    } else {
+      deltaTop = 0;
+    }
+  } else if (block === "center") {
+    deltaTop =
+      elRect.top -
+      containerRect.top -
+      (containerRect.height - elRect.height) / 2;
+  }
+
+  if (Math.abs(deltaTop) > 1) {
+    container.scrollTop = Math.max(0, container.scrollTop + deltaTop);
+  }
+}
+
+function scrollElementHorizontallyIntoContainer(el, container) {
+  const elRect = el.getBoundingClientRect();
+  const containerRect = container.getBoundingClientRect();
+  let deltaLeft = 0;
+
+  if (elRect.width >= containerRect.width || elRect.left < containerRect.left) {
+    deltaLeft = elRect.left - containerRect.left;
+  } else if (elRect.right > containerRect.right) {
+    deltaLeft = elRect.right - containerRect.right;
+  }
+
+  if (Math.abs(deltaLeft) > 1) {
+    container.scrollLeft = Math.max(0, container.scrollLeft + deltaLeft);
+  }
+}
+
+function scrollTranscriptElementIntoView(el, { block = "start" } = {}) {
+  const panel = el.classList.contains("subagent-panel")
+    ? el
+    : el.closest(".subagent-panel");
+  if (panel) {
+    const rack = panel.closest(".subagent-panel-rack");
+    if (rack) {
+      scrollElementHorizontallyIntoContainer(panel, rack);
+    }
+
+    if (el !== panel) {
+      const panelHeader = panel.querySelector(":scope > .agent-track-header");
+      const panelTopOffset = panelHeader
+        ? panelHeader.getBoundingClientRect().height + 8
+        : 0;
+      scrollElementVerticallyIntoContainer(el, panel, {
+        block: "nearest",
+        topOffset: panelTopOffset,
+      });
+    }
+    scheduleSubagentAlignment();
+    return;
+  }
+
+  const mainContent = document.getElementById("mainContent");
+  if (mainContent?.contains(el)) {
+    scrollElementVerticallyIntoContainer(el, mainContent, {
+      block,
+      topOffset: 24,
+    });
+    scheduleSubagentAlignment();
+    return;
+  }
+
+  el.scrollIntoView({ behavior: "smooth", block, inline: "nearest" });
+  scheduleSubagentAlignment();
+}
+
+function scrollToDomId(targetId, lock = null, options = {}) {
   const el = document.getElementById(targetId);
   if (!el) return;
 
   sidebarNavigationLock = lock;
   clearHighlightedTargets();
 
-  el.scrollIntoView({ behavior: "smooth", block: "start", inline: "center" });
+  scrollTranscriptElementIntoView(el, options);
   el.classList.add("highlighted");
 
   setTimeout(() => {
@@ -948,7 +1034,7 @@ function showToolResult(activityPath, agentId = "", messageIndex = null) {
   sidebarNavigationLock = { kind: "activity", activityPath };
   clearHighlightedTargets();
 
-  el.scrollIntoView({ behavior: "smooth", block: "start", inline: "center" });
+  scrollTranscriptElementIntoView(el);
   el.classList.add("highlighted");
   setActiveSidebarActivity(activityPath);
 
@@ -1258,11 +1344,9 @@ function selectAgentTrack(agentId) {
     const track = document.querySelector(
       `.agent-track[data-agent-id="${CSS.escape(agentId)}"]`,
     );
-    track?.scrollIntoView({
-      behavior: "smooth",
-      block: "nearest",
-      inline: "nearest",
-    });
+    if (track) {
+      scrollTranscriptElementIntoView(track, { block: "nearest" });
+    }
   });
 }
 
@@ -1438,7 +1522,6 @@ function collectToolSidebarItems(msg, context, activeSearch, items) {
       ...context,
       partIndex,
     });
-    if (!expandedToolResults.has(activityPath)) return;
 
     const text = getToolText(part);
     if (
@@ -1970,6 +2053,45 @@ function scheduleSubagentAlignment() {
   });
 }
 
+function getSubagentPanelElements() {
+  return Array.from(document.querySelectorAll(".subagent-panel"));
+}
+
+function syncSubagentPanelsToMain() {
+  const mainContent = document.getElementById("mainContent");
+  if (!mainContent || isSyncingAgentScroll) return;
+
+  isSyncingAgentScroll = true;
+  const nextScrollTop = mainContent.scrollTop;
+  getSubagentPanelElements().forEach((panel) => {
+    if (panel.scrollTop !== nextScrollTop) {
+      panel.scrollTop = nextScrollTop;
+    }
+  });
+  isSyncingAgentScroll = false;
+}
+
+function renderFloatingSubagentPanels(openSubagentTracks, activeSearch) {
+  const overlay = document.getElementById("subagentPanelOverlay");
+  if (!overlay) return;
+
+  overlay.dataset.openPanelCount = String(openSubagentTracks.length);
+  if (!openSubagentTracks.length) {
+    overlay.innerHTML = "";
+    return;
+  }
+
+  const panelsHtml = openSubagentTracks
+    .map((track) => renderAgentTrack(track, activeSearch, { variant: "panel" }))
+    .join("");
+  overlay.innerHTML = `
+        <div class="subagent-panel-rack" id="subagentPanelRack" aria-label="Open subagent panels">
+            ${panelsHtml}
+        </div>
+    `;
+  syncSubagentPanelsToMain();
+}
+
 // Render timeline
 function renderTimeline() {
   if (!SESSION_DATA) return;
@@ -1982,24 +2104,13 @@ function renderTimeline() {
 
   const mainTrack = tracks.find((track) => track.id === "main") || tracks[0];
   const openSubagentTracks = getOpenSubagentTracks(tracks);
-  const panelsHtml = openSubagentTracks
-    .map((track) => renderAgentTrack(track, activeSearch, { variant: "panel" }))
-    .join("");
 
   timeline.innerHTML = `
         <div class="agent-workspace" id="agentWorkspace" data-open-panel-count="${openSubagentTracks.length}">
             ${renderAgentTrack(mainTrack, activeSearch, { variant: "main" })}
-            ${
-              openSubagentTracks.length
-                ? `
-                    <div class="subagent-panel-rack" id="subagentPanelRack" aria-label="Open subagent panels">
-                        ${panelsHtml}
-                    </div>
-                `
-                : ""
-            }
         </div>
     `;
+  renderFloatingSubagentPanels(openSubagentTracks, activeSearch);
 
   // Apply syntax highlighting to all code blocks
   applySyntaxHighlighting();
@@ -2065,6 +2176,9 @@ function loadData(data) {
 
   // Add scroll listener
   const mainContent = document.getElementById("mainContent");
+  mainContent.addEventListener("scroll", syncSubagentPanelsToMain, {
+    passive: true,
+  });
   mainContent.addEventListener("scroll", detectVisibleMessage);
   ["wheel", "touchstart", "pointerdown"].forEach((eventName) => {
     mainContent.addEventListener(eventName, clearSidebarNavigationLock, {

@@ -48,7 +48,10 @@ function harnessHtml() {
         <div class="container">
           <aside id="sidebar"><div id="sidebarResizeHandle"></div></aside>
           <div id="messageList"></div>
-          <div id="mainContent"><div id="timeline"></div></div>
+          <div class="main-wrapper">
+            <div id="mainContent"><div id="timeline"></div></div>
+            <div id="subagentPanelOverlay" class="subagent-floating-panels"></div>
+          </div>
           <div id="vizPanel"><button id="vizPanelToggle"></button></div>
         </div>
         <div id="stats"></div>
@@ -156,16 +159,52 @@ async function readIdentityState(page, selector) {
           document.getElementById("agentWorkspace")?.dataset.openPanelCount ||
             0,
         ),
+        overlayOpenPanelCount: Number(
+          document.getElementById("subagentPanelOverlay")?.dataset
+            .openPanelCount || 0,
+        ),
         mainStreamCount: document.querySelectorAll(".agent-main-stream").length,
         panelRackCount: document.querySelectorAll(".subagent-panel-rack")
           .length,
         subagentPanelCount: document.querySelectorAll(".subagent-panel").length,
+        panelsInsideWorkspace: document.querySelectorAll(
+          "#agentWorkspace .subagent-panel",
+        ).length,
         mainTrackIds: Array.from(
           document.querySelectorAll(".agent-main-stream"),
         ).map((track) => track.dataset.agentId || null),
         panelTrackIds: Array.from(
           document.querySelectorAll(".subagent-panel"),
         ).map((track) => track.dataset.agentId || null),
+        mainRect: (() => {
+          const main = document.querySelector(".agent-main-stream");
+          if (!main) return null;
+          const rect = main.getBoundingClientRect();
+          return { width: rect.width, left: rect.left, right: rect.right };
+        })(),
+        overlayRect: (() => {
+          const overlay = document.getElementById("subagentPanelOverlay");
+          if (!overlay) return null;
+          const rect = overlay.getBoundingClientRect();
+          return { width: rect.width, left: rect.left, right: rect.right };
+        })(),
+        rackScrollLeft:
+          document.getElementById("subagentPanelRack")?.scrollLeft ?? null,
+        rackClientWidth:
+          document.getElementById("subagentPanelRack")?.clientWidth ?? null,
+        rackScrollWidth:
+          document.getElementById("subagentPanelRack")?.scrollWidth ?? null,
+        mainScrollTop: document.getElementById("mainContent")?.scrollTop ?? 0,
+        mainScrollLeft: document.getElementById("mainContent")?.scrollLeft ?? 0,
+        panelScrollTops: Array.from(
+          document.querySelectorAll(".subagent-panel"),
+        ).map((panel) => panel.scrollTop),
+        panelScrollLefts: Array.from(
+          document.querySelectorAll(".subagent-panel"),
+        ).map((panel) => panel.scrollLeft),
+        panelWidths: Array.from(
+          document.querySelectorAll(".subagent-panel"),
+        ).map((panel) => panel.getBoundingClientRect().width),
       },
       selectedAgentChips: Array.from(
         document.querySelectorAll(".selected-agent-chip"),
@@ -377,6 +416,11 @@ async function verifyAgentStreamPresentation(browser) {
     "</task>",
     "After block.",
   ].join("\n");
+  const tallText = Array.from(
+    { length: 18 },
+    (_, index) =>
+      `Scrollable paragraph ${index + 1}. This content intentionally makes the stream tall enough for vertical scroll synchronization checks.`,
+  ).join("\n\n");
   const firstTranscript = {
     task_part_id: "first-task",
     agent_type: "general",
@@ -393,9 +437,21 @@ async function verifyAgentStreamPresentation(browser) {
         finish: "stop",
         parts: [
           { type: "reasoning", text: "Internal chain of action." },
-          { type: "text", text: claudeText },
+          { type: "text", text: `${claudeText}\n\n${tallText}` },
         ],
       },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        role: "assistant",
+        modelID: "claude-sonnet-4",
+        time_created: `2026-06-18T00:${String(index + 10).padStart(2, "0")}:00Z`,
+        finish: "stop",
+        parts: [
+          {
+            type: "text",
+            text: `${tallText}\n\nFirst panel filler ${index + 1}`,
+          },
+        ],
+      })),
     ],
     subagent_transcripts: [],
   };
@@ -413,8 +469,20 @@ async function verifyAgentStreamPresentation(browser) {
         modelID: "deepseek-v4-pro",
         time_created: "2026-06-18T00:02:00Z",
         finish: "stop",
-        parts: [{ type: "text", text: "second answer" }],
+        parts: [{ type: "text", text: `second answer\n\n${tallText}` }],
       },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        role: "assistant",
+        modelID: "deepseek-v4-pro",
+        time_created: `2026-06-18T00:${String(index + 20).padStart(2, "0")}:00Z`,
+        finish: "stop",
+        parts: [
+          {
+            type: "text",
+            text: `${tallText}\n\nSecond panel filler ${index + 1}`,
+          },
+        ],
+      })),
     ],
     subagent_transcripts: [],
   };
@@ -432,8 +500,22 @@ async function verifyAgentStreamPresentation(browser) {
         modelID: "k2p7",
         time_created: `2026-06-18T00:${String(index + 3).padStart(2, "0")}:00Z`,
         finish: "stop",
-        parts: [{ type: "text", text: `extra answer ${index + 1}` }],
+        parts: [
+          { type: "text", text: `extra answer ${index + 1}\n\n${tallText}` },
+        ],
       },
+      ...Array.from({ length: 6 }, (_, fillerIndex) => ({
+        role: "assistant",
+        modelID: "k2p7",
+        time_created: `2026-06-18T01:${String(fillerIndex + index * 6).padStart(2, "0")}:00Z`,
+        finish: "stop",
+        parts: [
+          {
+            type: "text",
+            text: `${tallText}\n\nExtra panel ${index + 1} filler ${fillerIndex + 1}`,
+          },
+        ],
+      })),
     ],
     subagent_transcripts: [],
   }));
@@ -459,6 +541,18 @@ async function verifyAgentStreamPresentation(browser) {
           ),
         ],
       },
+      ...Array.from({ length: 10 }, (_, index) => ({
+        role: "assistant",
+        modelID: "main-model-a",
+        time_created: `2026-06-18T02:${String(index).padStart(2, "0")}:00Z`,
+        finish: "stop",
+        parts: [
+          {
+            type: "text",
+            text: `${tallText}\n\nMain stream filler ${index + 1}`,
+          },
+        ],
+      })),
     ],
     subagent_transcripts: [
       firstTranscript,
@@ -467,6 +561,7 @@ async function verifyAgentStreamPresentation(browser) {
     ],
   });
 
+  const initialState = await readIdentityState(page, ".message-item");
   const firstOption = page
     .locator(
       '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option[data-track-kind="subagent"]',
@@ -488,10 +583,25 @@ async function verifyAgentStreamPresentation(browser) {
     openedState.workspace.mainStreamCount === 1 &&
       openedState.workspace.subagentPanelCount === 2 &&
       openedState.workspace.openPanelCount === 2 &&
+      openedState.workspace.overlayOpenPanelCount === 2 &&
+      openedState.workspace.panelsInsideWorkspace === 0 &&
       openedState.workspace.mainTrackIds[0] === "main" &&
       openedState.workspace.panelTrackIds.includes(firstAgentId) &&
       openedState.workspace.panelTrackIds.includes(secondAgentId),
-    "clicking multiple subagents should keep main stream and open multiple right panels",
+    "clicking multiple subagents should keep main stream and open floating right panels",
+    openedState,
+  );
+  assert(
+    Math.abs(
+      openedState.workspace.mainRect.width -
+        initialState.workspace.mainRect.width,
+    ) < 1,
+    "floating subagent panels should not horizontally collapse the main stream",
+    { initialState, openedState },
+  );
+  assert(
+    openedState.workspace.panelWidths.every((width) => width <= 522),
+    "floating subagent panels should respect the configured maximum width",
     openedState,
   );
   assert(
@@ -548,9 +658,54 @@ async function verifyAgentStreamPresentation(browser) {
   const manyPanelsState = await readIdentityState(page, ".message-item");
   assert(
     manyPanelsState.workspace.subagentPanelCount === 8 &&
-      manyPanelsState.workspace.openPanelCount === 8,
+      manyPanelsState.workspace.openPanelCount === 8 &&
+      manyPanelsState.workspace.overlayOpenPanelCount === 8 &&
+      manyPanelsState.workspace.panelsInsideWorkspace === 0 &&
+      manyPanelsState.workspace.rackScrollWidth >
+        manyPanelsState.workspace.rackClientWidth,
     "opening many long-titled subagent panels should keep every panel mounted",
     manyPanelsState,
+  );
+  assert(
+    Math.abs(
+      manyPanelsState.workspace.mainRect.width -
+        initialState.workspace.mainRect.width,
+    ) < 1,
+    "opening many floating panels should not collapse the main stream",
+    { initialState, manyPanelsState },
+  );
+  assert(
+    manyPanelsState.workspace.panelWidths.every((width) => width <= 522),
+    "every opened floating subagent panel should respect the maximum width",
+    manyPanelsState,
+  );
+
+  await page.evaluate(() => {
+    const rack = document.getElementById("subagentPanelRack");
+    if (rack) {
+      rack.scrollLeft = Math.min(120, rack.scrollWidth - rack.clientWidth);
+    }
+    const main = document.getElementById("mainContent");
+    if (main) {
+      main.scrollTop = Math.min(240, main.scrollHeight - main.clientHeight);
+    }
+  });
+  await page.waitForTimeout(100);
+  const syncedScrollState = await readIdentityState(page, ".message-item");
+  assert(
+    syncedScrollState.workspace.panelScrollTops.length === 8 &&
+      syncedScrollState.workspace.panelScrollTops.every(
+        (top) => Math.abs(top - syncedScrollState.workspace.mainScrollTop) <= 1,
+      ),
+    "main vertical scrolling should synchronize subagent panel scrollTop values",
+    syncedScrollState,
+  );
+  assert(
+    syncedScrollState.workspace.rackScrollLeft > 0 &&
+      syncedScrollState.workspace.mainScrollLeft === 0 &&
+      syncedScrollState.workspace.panelScrollLefts.every((left) => left === 0),
+    "vertical scroll synchronization should not synchronize horizontal scroll positions",
+    syncedScrollState,
   );
 
   await page
@@ -1003,8 +1158,10 @@ async function verifyToolBodyIds(browser) {
     state,
   );
   assert(
-    state.rows.filter((row) => row.activityPath).length === 0,
-    "tool rows should not appear in the sidebar before inline insertion",
+    state.rows.filter((row) => row.activityPath).length === 2 &&
+      state.rows.some((row) => row.activityPath === "msg0__tool0-bash") &&
+      state.rows.some((row) => row.activityPath === "msg0__tool1-bash"),
+    "collapsed tool outputs should appear in the transcript list before inline expansion",
     state,
   );
 
@@ -1025,9 +1182,14 @@ async function verifyToolBodyIds(browser) {
     expandedFromMessage,
   );
   assert(
-    toolRowsAfterFirstInsert.length === 1 &&
-      toolRowsAfterFirstInsert[0].activityPath === "msg0__tool0-bash",
-    "only the clicked inline tool result should be inserted into the sidebar",
+    toolRowsAfterFirstInsert.length === 2 &&
+      toolRowsAfterFirstInsert.some(
+        (row) => row.activityPath === "msg0__tool0-bash",
+      ) &&
+      toolRowsAfterFirstInsert.some(
+        (row) => row.activityPath === "msg0__tool1-bash",
+      ),
+    "expanding one inline tool result should keep all tool outputs in the transcript list",
     expandedFromMessage,
   );
 
@@ -1043,9 +1205,12 @@ async function verifyToolBodyIds(browser) {
   assert(
     toolRowsAfterSecondInsert.length === 2 &&
       toolRowsAfterSecondInsert.some(
+        (row) => row.activityPath === "msg0__tool0-bash",
+      ) &&
+      toolRowsAfterSecondInsert.some(
         (row) => row.activityPath === "msg0__tool1-bash",
       ),
-    "second inline tool result should be inserted into the sidebar only after its message button is clicked",
+    "expanding the second inline tool result should keep both tool outputs in the transcript list",
     expandedFromSecondMessage,
   );
 
