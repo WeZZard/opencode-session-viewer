@@ -11,7 +11,7 @@ let tokenData = [];
 let maxTokens = { input: 1, output: 1, cache: 1 };
 let currentMessageIndex = 0;
 let urlSearchQuery = ""; // Search query from URL (for highlighting)
-let scrollDetectionPausedUntil = 0;
+let sidebarNavigationLock = null;
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -145,6 +145,10 @@ function esc(text) {
 
 function domId(value) {
   return String(value || "").replace(/[^A-Za-z0-9_-]/g, "-");
+}
+
+function getSubagentMessageDomId(parentIndex, transcriptId, subagentIndex) {
+  return `submsg-${domId(parentIndex)}-${domId(transcriptId)}-${subagentIndex}`;
 }
 
 function stringifyValue(value) {
@@ -472,10 +476,34 @@ function toggleTool(id) {
 }
 
 // Scroll to message
+function setActiveSidebarMessage(idx) {
+  document.querySelectorAll(".message-item").forEach((item) => {
+    item.classList.toggle(
+      "active",
+      !item.dataset.subagentId && Number(item.dataset.index) === idx,
+    );
+  });
+}
+
+function setActiveSidebarSubagent(transcriptId, subagentIndex, parentIndex) {
+  document.querySelectorAll(".message-item").forEach((item) => {
+    item.classList.toggle(
+      "active",
+      item.dataset.subagentId === transcriptId &&
+        Number(item.dataset.subagentIndex) === subagentIndex &&
+        Number(item.dataset.index) === parentIndex,
+    );
+  });
+}
+
+function clearSidebarNavigationLock() {
+  sidebarNavigationLock = null;
+}
+
 function scrollToMessage(idx) {
   const el = document.getElementById("msg-" + idx);
   if (el) {
-    scrollDetectionPausedUntil = Date.now() + 2500;
+    sidebarNavigationLock = { kind: "message", index: idx };
 
     if (highlightedId !== null) {
       document
@@ -487,12 +515,7 @@ function scrollToMessage(idx) {
     el.classList.add("highlighted");
     highlightedId = idx;
 
-    document.querySelectorAll(".message-item").forEach((item) => {
-      item.classList.toggle(
-        "active",
-        !item.dataset.subagentId && parseInt(item.dataset.index) === idx,
-      );
-    });
+    setActiveSidebarMessage(idx);
 
     updateViz(idx);
 
@@ -506,7 +529,12 @@ function scrollToSubagentMessage(transcriptId, subagentIndex, parentIndex) {
   const parentEl = document.getElementById("msg-" + parentIndex);
   if (!parentEl) return;
 
-  scrollDetectionPausedUntil = Date.now() + 2500;
+  sidebarNavigationLock = {
+    kind: "subagent",
+    transcriptId,
+    subagentIndex,
+    parentIndex,
+  };
 
   parentEl
     .querySelectorAll(
@@ -516,8 +544,11 @@ function scrollToSubagentMessage(transcriptId, subagentIndex, parentIndex) {
       details.open = true;
     });
 
-  const childEl = document.getElementById(
-    `submsg-${domId(transcriptId)}-${subagentIndex}`,
+  const childEl = parentEl.querySelector(
+    "#" +
+      CSS.escape(
+        getSubagentMessageDomId(parentIndex, transcriptId, subagentIndex),
+      ),
   );
   const targetEl = childEl || parentEl;
 
@@ -534,13 +565,7 @@ function scrollToSubagentMessage(transcriptId, subagentIndex, parentIndex) {
   targetEl.classList.add("highlighted");
   highlightedId = parentIndex;
 
-  document.querySelectorAll(".message-item").forEach((item) => {
-    item.classList.toggle(
-      "active",
-      item.dataset.subagentId === transcriptId &&
-        Number(item.dataset.subagentIndex) === subagentIndex,
-    );
-  });
+  setActiveSidebarSubagent(transcriptId, subagentIndex, parentIndex);
 
   updateViz(parentIndex);
 
@@ -552,7 +577,7 @@ function scrollToSubagentMessage(transcriptId, subagentIndex, parentIndex) {
 // Detect visible message on scroll
 function detectVisibleMessage() {
   if (!SESSION_DATA) return;
-  if (Date.now() < scrollDetectionPausedUntil) return;
+  if (sidebarNavigationLock) return;
 
   const mainContent = document.getElementById("mainContent");
   const scrollTop = mainContent.scrollTop;
@@ -576,13 +601,7 @@ function detectVisibleMessage() {
 
   if (closestIdx !== currentMessageIndex) {
     updateViz(closestIdx);
-
-    document.querySelectorAll(".message-item").forEach((item) => {
-      item.classList.toggle(
-        "active",
-        !item.dataset.subagentId && parseInt(item.dataset.index) === closestIdx,
-      );
-    });
+    setActiveSidebarMessage(closestIdx);
   }
 }
 
@@ -922,7 +941,7 @@ function transcriptMatchesQuery(transcript, query) {
     .includes(query.toLowerCase());
 }
 
-function renderSubagentTranscript(transcript) {
+function renderSubagentTranscript(transcript, parentIndex) {
   const messages = transcript.messages || [];
   const activeSearch = filterQuery || urlSearchQuery;
   const isLinkedMatch = transcriptMatchesQuery(transcript, activeSearch);
@@ -934,7 +953,9 @@ function renderSubagentTranscript(transcript) {
   const transcriptId = transcript.summary?.id || "";
 
   const messagesHtml = messages
-    .map((msg, index) => renderSubagentMessage(msg, transcript, index))
+    .map((msg, index) =>
+      renderSubagentMessage(msg, transcript, index, parentIndex),
+    )
     .join("");
 
   return `
@@ -953,10 +974,10 @@ function renderSubagentTranscript(transcript) {
     `;
 }
 
-function renderSubagentMessage(msg, transcript, index) {
+function renderSubagentMessage(msg, transcript, index, parentIndex) {
   const transcriptId = transcript.summary?.id || "";
   return `
-        <div class="subagent-message ${msg.role}" id="submsg-${domId(transcriptId)}-${index}">
+        <div class="subagent-message ${msg.role}" id="${getSubagentMessageDomId(parentIndex, transcriptId, index)}" data-transcript-id="${esc(transcriptId)}" data-subagent-index="${index}" data-parent-index="${parentIndex}">
             <div class="subagent-message-header">
                 <span class="role-badge ${msg.role}">${msg.role}</span>
                 <span class="message-meta">
@@ -972,6 +993,7 @@ function renderSubagentMessage(msg, transcript, index) {
                       renderPart(p, {
                         embedded: true,
                         subagents: transcript.subagent_transcripts || [],
+                        parentIndex,
                       }),
                     )
                     .join("") ||
@@ -1019,7 +1041,7 @@ function renderPart(part, context = {}) {
       content = `
                 <div class="subtask-prompt"><strong>Task:</strong> ${esc(prompt)}</div>
                 ${result ? `<div class="subtask-result">${DOMPurify.sanitize(marked.parse(resultText))}</div>` : ""}
-                ${transcript ? renderSubagentTranscript(transcript) : ""}
+                ${transcript ? renderSubagentTranscript(transcript, context.parentIndex) : ""}
             `;
     }
 
@@ -1171,7 +1193,7 @@ function renderTimeline() {
                         </button>
                     </div>
                     <div class="message-body">
-                        ${(m.parts || []).map((p) => renderPart(p, { subagents: SESSION_DATA.subagent_transcripts || [] })).join("") || '<span style="color:var(--text-tertiary)">(no content)</span>'}
+                        ${(m.parts || []).map((p) => renderPart(p, { subagents: SESSION_DATA.subagent_transcripts || [], parentIndex: originalIdx })).join("") || '<span style="color:var(--text-tertiary)">(no content)</span>'}
                     </div>
                 </div>
             `;
@@ -1238,14 +1260,32 @@ function loadData(data) {
   updateViz(0);
 
   // Add scroll listener
-  document
-    .getElementById("mainContent")
-    .addEventListener("scroll", detectVisibleMessage);
+  const mainContent = document.getElementById("mainContent");
+  mainContent.addEventListener("scroll", detectVisibleMessage);
+  ["wheel", "touchstart", "pointerdown"].forEach((eventName) => {
+    mainContent.addEventListener(eventName, clearSidebarNavigationLock, {
+      passive: true,
+    });
+  });
+  document.addEventListener("keydown", (event) => {
+    if (
+      [
+        "ArrowUp",
+        "ArrowDown",
+        "PageUp",
+        "PageDown",
+        "Home",
+        "End",
+        " ",
+      ].includes(event.key)
+    ) {
+      clearSidebarNavigationLock();
+    }
+  });
 
   // Navbar hide/show on scroll
   const navbar = document.getElementById("topNavbar");
   const container = document.querySelector(".container");
-  const mainContent = document.getElementById("mainContent");
   let lastScrollTop = 0;
   mainContent.addEventListener("scroll", () => {
     const st = mainContent.scrollTop;
