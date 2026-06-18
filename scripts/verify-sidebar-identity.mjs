@@ -28,6 +28,9 @@ function harnessHtml() {
         <meta charset="utf-8" />
         <style>
           #mainContent { height: 720px; overflow: auto; }
+          #messageList { width: 320px; }
+          .agent-filter { display: flex; gap: 8px; overflow-x: auto; }
+          .agent-filter-option { flex: 0 0 auto; min-width: 180px; }
           .message-item.active { outline: 2px solid red; }
           .tool-body { display: none; }
           .tool-body.expanded { display: block; }
@@ -150,6 +153,8 @@ async function readIdentityState(page, selector) {
       agentFilters: Array.from(document.querySelectorAll(".agent-filter")).map(
         (filter) => ({
           location: filter.dataset.agentFilterLocation || null,
+          scrollLeft: filter.scrollLeft,
+          maxScrollLeft: Math.max(0, filter.scrollWidth - filter.clientWidth),
           options: Array.from(
             filter.querySelectorAll(".agent-filter-option"),
           ).map((option) => ({
@@ -698,6 +703,11 @@ async function verifyToolBodyIds(browser) {
     "tool outputs should not render in a bottom activity stream",
     state,
   );
+  assert(
+    state.rows.filter((row) => row.activityPath).length === 0,
+    "tool rows should not appear in the sidebar before inline insertion",
+    state,
+  );
 
   await page.locator("[data-tool-result-button]").first().click();
   await page.waitForTimeout(100);
@@ -705,12 +715,39 @@ async function verifyToolBodyIds(browser) {
   const visibleFromMessage = expandedFromMessage.toolActivities.filter(
     (activity) => activity.visible,
   );
+  const toolRowsAfterFirstInsert = expandedFromMessage.rows.filter(
+    (row) => row.activityPath,
+  );
   assert(
     visibleFromMessage.length === 1 &&
       visibleFromMessage[0].text.includes("one") &&
       visibleFromMessage[0].insideMessageGroup,
     "message tool result button did not reveal exactly one inline result",
     expandedFromMessage,
+  );
+  assert(
+    toolRowsAfterFirstInsert.length === 1 &&
+      toolRowsAfterFirstInsert[0].activityPath === "msg0__tool0-bash",
+    "only the clicked inline tool result should be inserted into the sidebar",
+    expandedFromMessage,
+  );
+
+  await page.locator("[data-tool-result-button]").nth(1).click();
+  await page.waitForTimeout(100);
+  const expandedFromSecondMessage = await readIdentityState(
+    page,
+    ".message-item",
+  );
+  const toolRowsAfterSecondInsert = expandedFromSecondMessage.rows.filter(
+    (row) => row.activityPath,
+  );
+  assert(
+    toolRowsAfterSecondInsert.length === 2 &&
+      toolRowsAfterSecondInsert.some(
+        (row) => row.activityPath === "msg0__tool1-bash",
+      ),
+    "second inline tool result should be inserted into the sidebar only after its message button is clicked",
+    expandedFromSecondMessage,
   );
 
   await page
@@ -817,6 +854,91 @@ async function verifyConnectorAlignmentAfterExpansion(browser) {
   return { beforeExpansion, afterExpansion };
 }
 
+async function verifyAgentFilterScrollPreserved(browser) {
+  const page = await setupPage(browser);
+  const transcripts = Array.from({ length: 18 }, (_, index) => ({
+    task_part_id: `task-${index}`,
+    agent_type: "general",
+    summary: {
+      id: `session-${index}`,
+      title: `Long selector transcript ${index + 1}`,
+    },
+    messages: [
+      baseMessage(
+        [{ type: "text", text: `answer ${index + 1}` }],
+        "stop",
+        `2026-06-18T00:${String(index + 1).padStart(2, "0")}:00Z`,
+      ),
+    ],
+    subagent_transcripts: [],
+  }));
+
+  await runSyntheticSession(page, {
+    id: "wide-agent-filter",
+    messages: [
+      baseMessage(
+        transcripts.map((transcript, index) =>
+          taskPart(
+            `task-${index}`,
+            transcript.summary.id,
+            `prompt ${index + 1}`,
+          ),
+        ),
+        "tool-calls",
+        "2026-06-18T00:00:00Z",
+      ),
+    ],
+    subagent_transcripts: transcripts,
+  });
+
+  const filter = page.locator(
+    '.agent-filter[data-agent-filter-location="sidebar"]',
+  );
+  await filter.evaluate((el) => {
+    el.scrollLeft = el.scrollWidth;
+  });
+  const beforeClick = await filter.evaluate((el) => ({
+    scrollLeft: el.scrollLeft,
+    maxScrollLeft: Math.max(0, el.scrollWidth - el.clientWidth),
+  }));
+
+  const lastSubagentOption = page
+    .locator(
+      '.agent-filter[data-agent-filter-location="sidebar"] .agent-filter-option[data-track-kind="subagent"]',
+    )
+    .last();
+  const selectedAgentId =
+    await lastSubagentOption.getAttribute("data-agent-id");
+  await lastSubagentOption.click();
+  await page.waitForTimeout(100);
+
+  const state = await readIdentityState(page, ".message-item");
+  const sidebarFilter = state.agentFilters.find(
+    (agentFilter) => agentFilter.location === "sidebar",
+  );
+
+  assert(
+    beforeClick.scrollLeft > 0 && beforeClick.maxScrollLeft > 0,
+    "agent filter fixture did not create horizontal overflow",
+    { beforeClick, state },
+  );
+  assert(
+    sidebarFilter?.scrollLeft >= beforeClick.scrollLeft - 2,
+    "selecting a far-right subagent reset the horizontal agent filter scroll",
+    { beforeClick, state },
+  );
+  assert(
+    sidebarFilter?.options.some(
+      (option) => option.agentId === selectedAgentId && option.active,
+    ),
+    "far-right subagent option was not selected after click",
+    { selectedAgentId, state },
+  );
+
+  await page.close();
+  return { beforeClick, afterClick: sidebarFilter, selectedAgentId };
+}
+
 const browser = await chromium.launch({ headless: true });
 try {
   const results = {
@@ -825,6 +947,7 @@ try {
     toolBodyIds: await verifyToolBodyIds(browser),
     connectorAlignmentAfterExpansion:
       await verifyConnectorAlignmentAfterExpansion(browser),
+    agentFilterScrollPreserved: await verifyAgentFilterScrollPreserved(browser),
   };
   console.log(JSON.stringify({ ok: true, results }, null, 2));
 } catch (error) {

@@ -14,6 +14,7 @@ let sidebarNavigationLock = null;
 let selectedAgentId = "main";
 const expandedToolResults = new Set();
 let alignmentFrame = null;
+let sidebarAgentFilterScrollLeft = 0;
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -769,6 +770,7 @@ function scrollToSubagentMessage(
 function setToolResultExpanded(activityPath, expanded) {
   const card = document.getElementById(getActivityDomId(activityPath));
   if (!card) return null;
+  const wasExpanded = expandedToolResults.has(activityPath);
 
   card.classList.toggle("expanded", expanded);
   card.setAttribute("aria-hidden", expanded ? "false" : "true");
@@ -785,6 +787,9 @@ function setToolResultExpanded(activityPath, expanded) {
     expandedToolResults.delete(activityPath);
   }
 
+  if (wasExpanded !== expanded && SESSION_DATA) {
+    renderSidebar();
+  }
   scheduleSubagentAlignment();
 
   return card;
@@ -1046,6 +1051,34 @@ function renderAgentFilter(location) {
     `;
 }
 
+function getSidebarAgentFilter() {
+  return document.querySelector(
+    '.agent-filter[data-agent-filter-location="sidebar"]',
+  );
+}
+
+function captureSidebarAgentFilterScroll() {
+  const filter = getSidebarAgentFilter();
+  if (filter) {
+    sidebarAgentFilterScrollLeft = filter.scrollLeft;
+  }
+}
+
+function restoreSidebarAgentFilterScroll() {
+  const filter = getSidebarAgentFilter();
+  if (!filter) return;
+
+  const maxScrollLeft = Math.max(0, filter.scrollWidth - filter.clientWidth);
+  filter.scrollLeft = Math.min(sidebarAgentFilterScrollLeft, maxScrollLeft);
+  filter.addEventListener(
+    "scroll",
+    () => {
+      sidebarAgentFilterScrollLeft = filter.scrollLeft;
+    },
+    { passive: true },
+  );
+}
+
 function selectAgentTrack(agentId) {
   if (!agentId || selectedAgentId === agentId) return;
   selectedAgentId = agentId;
@@ -1067,6 +1100,8 @@ function selectAgentTrack(agentId) {
 
 function renderSidebar() {
   if (!SESSION_DATA) return;
+
+  captureSidebarAgentFilterScroll();
 
   // Determine which query to use for filtering (typed filter takes precedence over URL search)
   const activeSearch = filterQuery || urlSearchQuery;
@@ -1114,6 +1149,8 @@ function renderSidebar() {
             `;
       })
       .join("");
+
+  restoreSidebarAgentFilterScroll();
 }
 
 // Update the filter clear button and label state
@@ -1232,6 +1269,8 @@ function collectToolSidebarItems(msg, context, activeSearch, items) {
       ...context,
       partIndex,
     });
+    if (!expandedToolResults.has(activityPath)) return;
+
     const text = getToolText(part);
     if (
       activeSearch &&
