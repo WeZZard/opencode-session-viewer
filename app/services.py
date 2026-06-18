@@ -146,6 +146,36 @@ def _load_session_messages(upstream_db, session_id: str) -> list[Message]:
     return [Message.model_validate(m) for m in upstream_db.scalars(stmt).all()]
 
 
+def _task_part_state(part) -> tuple[dict, dict, dict]:
+    state = part.state or {}
+    metadata = state.get("metadata") if isinstance(state, dict) else None
+    input_data = state.get("input") if isinstance(state, dict) else None
+
+    if not isinstance(state, dict):
+        state = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if not isinstance(input_data, dict):
+        input_data = {}
+
+    return state, metadata, input_data
+
+
+def _task_link_from_part(message: Message, part) -> dict[str, str]:
+    _, _, input_data = _task_part_state(part)
+    link: dict[str, str] = {}
+    if part.id:
+        link["task_part_id"] = part.id
+    if message.id:
+        link["task_message_id"] = message.id
+
+    agent_type = input_data.get("subagent_type")
+    if isinstance(agent_type, str) and agent_type:
+        link["agent_type"] = agent_type
+
+    return link
+
+
 def _task_subagent_links(messages: list[Message]) -> dict[str, dict[str, str]]:
     """Map task tool metadata session IDs to the tool part that launched them."""
     links: dict[str, dict[str, str]] = {}
@@ -155,32 +185,73 @@ def _task_subagent_links(messages: list[Message]) -> dict[str, dict[str, str]]:
             if part.type != "tool" or part.tool != "task":
                 continue
 
-            state = part.state or {}
-            metadata = state.get("metadata") if isinstance(state, dict) else None
-            input_data = state.get("input") if isinstance(state, dict) else None
-
-            if not isinstance(metadata, dict):
-                metadata = {}
-            if not isinstance(input_data, dict):
-                input_data = {}
-
+            _, metadata, _ = _task_part_state(part)
             session_id = metadata.get("sessionId") or metadata.get("session_id")
             if not isinstance(session_id, str) or not session_id:
                 continue
 
-            link: dict[str, str] = {}
-            if part.id:
-                link["task_part_id"] = part.id
-            if message.id:
-                link["task_message_id"] = message.id
-
-            agent_type = input_data.get("subagent_type")
-            if isinstance(agent_type, str) and agent_type:
-                link["agent_type"] = agent_type
-
-            links[session_id] = link
+            links[session_id] = _task_link_from_part(message, part)
 
     return links
+
+
+def _subagent_title_stem(title: str | None) -> str:
+    if not title:
+        return ""
+    return re.sub(r"\s+\([^)]*subagent\)\s*$", "", title).strip()
+
+
+def _task_title_candidate(input_data: dict) -> str:
+    description = input_data.get("description")
+    if isinstance(description, str) and description.strip():
+        return description.strip()
+
+    prompt = input_data.get("prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        return prompt.strip().splitlines()[0].strip()
+
+    return ""
+
+
+def _infer_subagent_task_link(
+    child: UpstreamSession,
+    messages: list[Message],
+    used_task_part_ids: set[str],
+) -> dict[str, str]:
+    """Infer a task link for child sessions whose task metadata omitted sessionId."""
+    child_title = _subagent_title_stem(child.title)
+    if not child_title:
+        return {}
+
+    candidates: list[tuple[int, dict[str, str]]] = []
+    for message in messages:
+        for part in message.parts:
+            if part.type != "tool" or part.tool != "task":
+                continue
+            if part.id and part.id in used_task_part_ids:
+                continue
+
+            _, metadata, input_data = _task_part_state(part)
+            session_id = metadata.get("sessionId") or metadata.get("session_id")
+            if isinstance(session_id, str) and session_id:
+                continue
+
+            task_title = _task_title_candidate(input_data)
+            if task_title != child_title:
+                continue
+
+            message_time = message.time_created or part.time_created or 0
+            child_time = child.time_created or 0
+            if child_time and message_time and message_time > child_time:
+                continue
+
+            candidates.append((message_time, _task_link_from_part(message, part)))
+
+    if not candidates:
+        return {}
+
+    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+    return candidates[0][1]
 
 
 def _conversation_summary_from_upstream(
@@ -232,10 +303,20 @@ def _build_conversation_export(
         .where(UpstreamSession.parent_id == upstream_session.id)
         .order_by(UpstreamSession.time_created, UpstreamSession.id)
     ).all()
+    used_task_part_ids = {
+        link["task_part_id"] for link in task_links.values() if "task_part_id" in link
+    }
     for child in fallback_children:
         if child.id in seen_child_ids:
             continue
-        child_sessions.append((child, task_links.get(child.id, {})))
+        inferred_link = _infer_subagent_task_link(
+            child,
+            messages,
+            used_task_part_ids,
+        )
+        if "task_part_id" in inferred_link:
+            used_task_part_ids.add(inferred_link["task_part_id"])
+        child_sessions.append((child, inferred_link))
         seen_child_ids.add(child.id)
 
     subagent_transcripts = [

@@ -528,60 +528,23 @@ body {
   font-size: 12px;
 }
 
-.timeline-spacer {
+.agent-alignment-spacer {
   position: relative;
-  min-height: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-tertiary);
-  font-size: 10px;
 }
 
-.timeline-spacer::before {
+.agent-alignment-spacer::before {
   content: "";
   position: absolute;
-  top: 50%;
   left: 8px;
-  right: 8px;
-  border-top: 1px dashed var(--border-color);
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed rgba(59, 130, 246, 0.32);
 }
 
-.timeline-spacer span {
-  position: relative;
-  z-index: 1;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--bg-primary);
-}
-
-.timeline-idle-break {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 4px 0;
-  color: var(--text-tertiary);
-  font-size: 10px;
-}
-
-.timeline-idle-break::before {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 8px;
-  right: 8px;
-  border-top: 1px solid rgba(217, 115, 13, 0.35);
-}
-
-.timeline-idle-break span {
-  position: relative;
-  z-index: 1;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--bg-primary);
-  color: var(--accent-orange);
-  border: 1px solid rgba(217, 115, 13, 0.25);
+.agent-alignment-spacer[data-alignment-offset-px="0"]::before,
+.agent-alignment-spacer[data-alignment-offset-px="0.0"]::before,
+.agent-alignment-spacer.unlinked::before {
+  display: none;
 }
 
 .agent-connector {

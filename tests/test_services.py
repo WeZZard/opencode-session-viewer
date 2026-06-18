@@ -289,6 +289,66 @@ class TestLoadConversationExport:
         assert transcript.agent_type == "general"
         assert transcript.messages[0].parts[0].text == "subagent transcript body"
 
+    def test_export_infers_subagent_task_link_without_session_metadata(
+        self, populated_dbs, upstream_db
+    ):
+        child = make_upstream_session(
+            id="sub-inferred",
+            title="Inspect files (@general subagent)",
+            parent_id="sess-1",
+            time_created=1_700_000_000_700,
+        )
+        task_msg = make_upstream_message(
+            id="msg-task-inferred",
+            session_id="sess-1",
+            role="assistant",
+            time_created=1_700_000_000_650,
+        )
+        task_part = UpstreamPart(
+            id="part-task-inferred",
+            message_id="msg-task-inferred",
+            data=json.dumps(
+                {
+                    "type": "tool",
+                    "tool": "task",
+                    "state": {
+                        "input": {
+                            "subagent_type": "general",
+                            "description": "Inspect files",
+                            "prompt": "Inspect files",
+                        },
+                        "metadata": {},
+                        "status": "completed",
+                    },
+                }
+            ),
+            time_created=1_700_000_000_660,
+        )
+        child_msg = make_upstream_message(
+            id="sub-msg-inferred",
+            session_id="sub-inferred",
+            role="assistant",
+            time_created=1_700_000_000_800,
+        )
+        child_part = make_upstream_part(
+            id="sub-part-inferred",
+            message_id="sub-msg-inferred",
+            text="subagent transcript body",
+            time_created=1_700_000_000_810,
+        )
+        upstream_db.add_all([child, task_msg, task_part, child_msg, child_part])
+        upstream_db.commit()
+
+        result = load_conversation_export("sess-1")
+
+        assert result is not None
+        assert len(result.subagent_transcripts) == 1
+        transcript = result.subagent_transcripts[0]
+        assert transcript.summary.id == "sub-inferred"
+        assert transcript.task_part_id == "part-task-inferred"
+        assert transcript.task_message_id == "msg-task-inferred"
+        assert transcript.agent_type == "general"
+
     def test_export_includes_unlinked_child_session(self, populated_dbs, upstream_db):
         child = make_upstream_session(
             id="sub-unlinked",

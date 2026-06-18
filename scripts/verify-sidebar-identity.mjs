@@ -86,7 +86,9 @@ async function runSyntheticSession(page, data) {
     filterQuery = "";
     urlSearchQuery = "";
     loadData(sessionData);
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    );
   }, data);
 }
 
@@ -96,9 +98,16 @@ function duplicateIdsFrom(ids) {
   );
 }
 
-function hasUniformSpacerScale(spacer) {
-  const expectedHeight = Math.max(8, spacer.minutes * 14);
-  return Math.abs(spacer.height - expectedHeight) < 0.2;
+function hasAlignedConnector(connector) {
+  return (
+    connector.sourceMessageExists &&
+    connector.spawnPromptExists &&
+    connector.firstMessageExists &&
+    connector.alignmentStatus === "aligned" &&
+    connector.connectorHeight > 0 &&
+    connector.alignmentConnectorHeight > 0 &&
+    Math.abs(connector.firstMessageTopDelta) < 1
+  );
 }
 
 async function readIdentityState(page, selector) {
@@ -166,18 +175,33 @@ async function readIdentityState(page, selector) {
           const sourceMessageId = el.dataset.sourceMessageId || "";
           const spawnPromptId = el.dataset.spawnPromptId || "";
           const firstMessageId = el.dataset.firstMessageId || "";
+          const sourceMessage = document.getElementById(sourceMessageId);
+          const firstMessage = document.getElementById(firstMessageId);
+          const spacer = el
+            .closest(".agent-track")
+            ?.querySelector(".agent-alignment-spacer");
+          const sourceTop = sourceMessage?.getBoundingClientRect().top ?? null;
+          const firstTop = firstMessage?.getBoundingClientRect().top ?? null;
           return {
             subagentId: el.dataset.subagentId || null,
             sourceAgentId: el.dataset.sourceAgentId || null,
             sourceMessageId,
             spawnPromptId,
             firstMessageId,
-            sourceMessageExists: Boolean(
-              document.getElementById(sourceMessageId),
-            ),
+            sourceMessageExists: Boolean(sourceMessage),
             spawnPromptExists: Boolean(document.getElementById(spawnPromptId)),
-            firstMessageExists: Boolean(
-              document.getElementById(firstMessageId),
+            firstMessageExists: Boolean(firstMessage),
+            sourceTop,
+            firstTop,
+            firstMessageTopDelta:
+              sourceTop !== null && firstTop !== null
+                ? firstTop - sourceTop
+                : null,
+            connectorHeight: el.getBoundingClientRect().height,
+            alignmentOffset: Number(spacer?.dataset.alignmentOffsetPx || 0),
+            alignmentStatus: spacer?.dataset.alignmentStatus || null,
+            alignmentConnectorHeight: Number(
+              spacer?.dataset.connectorHeightPx || 0,
             ),
           };
         },
@@ -203,6 +227,17 @@ async function readIdentityState(page, selector) {
         height: Number.parseFloat(el.style.height || "0"),
         trackKind: el.closest(".agent-track")?.dataset.trackKind || null,
         trackId: el.closest(".agent-track")?.dataset.agentId || null,
+      })),
+      alignmentSpacers: Array.from(
+        document.querySelectorAll(".agent-alignment-spacer"),
+      ).map((el) => ({
+        trackKind: el.closest(".agent-track")?.dataset.trackKind || null,
+        trackId: el.closest(".agent-track")?.dataset.agentId || null,
+        height: Number.parseFloat(el.style.height || "0"),
+        status: el.dataset.alignmentStatus || null,
+        connectorHeight: Number(el.dataset.connectorHeightPx || 0),
+        parentMessageId: el.dataset.parentMessageId || null,
+        firstMessageId: el.dataset.firstMessageId || null,
       })),
       toolBodyIds: Array.from(document.querySelectorAll(".tool-body")).map(
         (el) => el.id,
@@ -376,13 +411,8 @@ async function verifyRepeatedTopLevelTranscript(browser) {
   );
   assert(
     state.connectors.length === 2 &&
-      state.connectors.every(
-        (connector) =>
-          connector.sourceMessageExists &&
-          connector.spawnPromptExists &&
-          connector.firstMessageExists,
-      ),
-    "top-level connectors do not resolve their linked DOM anchors",
+      state.connectors.every(hasAlignedConnector),
+    "top-level connectors do not align first messages to parent messages",
     state,
   );
   assert(
@@ -426,18 +456,16 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     state,
   );
   assert(
-    state.timelineSpacers.some((spacer) => spacer.minutes >= 1),
-    "top-level tracks did not include timestamp-based spacers",
+    state.timelineSpacers.length === 0 && state.timelineIdleBreaks.length === 0,
+    "top-level tracks should not render timestamp-based timeline spacers",
     state,
   );
   assert(
-    state.timelineSpacers.every(hasUniformSpacerScale),
-    "top-level timeline spacers should use the uniform minute scale",
-    state,
-  );
-  assert(
-    state.timelineIdleBreaks.length === 0,
-    "top-level short gaps should not render idle breaks",
+    state.alignmentSpacers.length === 2 &&
+      state.alignmentSpacers.every(
+        (spacer) => spacer.status === "aligned" && spacer.connectorHeight > 0,
+      ),
+    "top-level subagent tracks did not record connector-aware alignment spacers",
     state,
   );
   await page.close();
@@ -534,13 +562,8 @@ async function verifyRepeatedNestedTranscript(browser) {
   );
   assert(
     state.connectors.length === 3 &&
-      state.connectors.every(
-        (connector) =>
-          connector.sourceMessageExists &&
-          connector.spawnPromptExists &&
-          connector.firstMessageExists,
-      ),
-    "nested connectors do not resolve their linked DOM anchors",
+      state.connectors.every(hasAlignedConnector),
+    "nested connectors do not align first messages to parent messages",
     state,
   );
   assert(
@@ -596,18 +619,16 @@ async function verifyRepeatedNestedTranscript(browser) {
     state,
   );
   assert(
-    state.timelineSpacers.some((spacer) => spacer.minutes >= 1),
-    "nested tracks did not include timestamp-based spacers",
+    state.timelineSpacers.length === 0 && state.timelineIdleBreaks.length === 0,
+    "nested tracks should not render timestamp-based timeline spacers",
     state,
   );
   assert(
-    state.timelineSpacers.every(hasUniformSpacerScale),
-    "nested timeline spacers should use the uniform minute scale",
-    state,
-  );
-  assert(
-    state.timelineIdleBreaks.length === 0,
-    "nested short gaps should not render idle breaks",
+    state.alignmentSpacers.length === 3 &&
+      state.alignmentSpacers.every(
+        (spacer) => spacer.status === "aligned" && spacer.connectorHeight > 0,
+      ),
+    "nested subagent tracks did not record connector-aware alignment spacers",
     state,
   );
   await page.close();
@@ -712,138 +733,88 @@ async function verifyToolBodyIds(browser) {
   return expandedFromSidebar;
 }
 
-async function verifyLongMainIdleCollapse(browser) {
+async function verifyConnectorAlignmentAfterExpansion(browser) {
   const page = await setupPage(browser);
-  const idleTranscript = {
-    task_part_id: "idle-task",
+  const firstTranscript = {
+    task_part_id: "first-task",
     agent_type: "general",
-    summary: { id: "idle-session", title: "Idle transcript" },
+    summary: { id: "first-session", title: "First transcript" },
     messages: [
       baseMessage(
-        [{ type: "text", text: "idle answer" }],
+        [{ type: "text", text: "first answer" }],
         "stop",
-        "2026-06-18T03:01:00Z",
+        "2026-06-18T00:01:00Z",
+      ),
+    ],
+    subagent_transcripts: [],
+  };
+  const secondTranscript = {
+    task_part_id: "second-task",
+    agent_type: "general",
+    summary: { id: "second-session", title: "Second transcript" },
+    messages: [
+      baseMessage(
+        [{ type: "text", text: "second answer" }],
+        "stop",
+        "2026-06-18T00:03:00Z",
       ),
     ],
     subagent_transcripts: [],
   };
 
   await runSyntheticSession(page, {
-    id: "long-main-idle",
-    messages: [
-      {
-        role: "user",
-        time_created: "2026-06-18T00:00:00Z",
-        parts: [{ type: "text", text: "start" }],
-      },
-      baseMessage(
-        [taskPart("idle-task", "idle-session", "after idle")],
-        "tool-calls",
-        "2026-06-18T03:00:00Z",
-      ),
-    ],
-    subagent_transcripts: [idleTranscript],
-  });
-
-  const state = await readIdentityState(page, ".message-item");
-  const nonMainLongSpacers = state.timelineSpacers.filter(
-    (spacer) => spacer.trackKind !== "main" && spacer.minutes >= 10,
-  );
-
-  assert(
-    state.timelineIdleBreaks.length === 1 &&
-      state.timelineIdleBreaks[0].trackKind === "main" &&
-      state.timelineIdleBreaks[0].minutes === 180,
-    "long main-agent idle should render as one main-track idle marker",
-    state,
-  );
-  assert(
-    nonMainLongSpacers.length === 0,
-    "long main-agent idle should not create long subagent leading spacers",
-    state,
-  );
-  assert(
-    state.timelineSpacers.every(hasUniformSpacerScale),
-    "active timeline spacers should keep the uniform minute scale after idle collapse",
-    state,
-  );
-  assert(
-    state.connectors.length === 1 &&
-      state.connectors[0].spawnPromptExists &&
-      state.connectors[0].firstMessageExists,
-    "idle collapse should preserve subagent connector anchors",
-    state,
-  );
-
-  await page.close();
-  return state;
-}
-
-async function verifySubagentElapsedDuringMainIdle(browser) {
-  const page = await setupPage(browser);
-  const backgroundTranscript = {
-    task_part_id: "background-task",
-    agent_type: "general",
-    summary: { id: "background-session", title: "Background transcript" },
+    id: "connector-realignment",
     messages: [
       baseMessage(
-        [{ type: "text", text: "background first" }],
-        "tool-calls",
-        "2026-06-18T00:12:00Z",
-      ),
-      baseMessage(
-        [{ type: "text", text: "background second" }],
-        "stop",
-        "2026-06-18T00:15:00Z",
-      ),
-    ],
-    subagent_transcripts: [],
-  };
-
-  await runSyntheticSession(page, {
-    id: "background-during-main-idle",
-    messages: [
-      baseMessage(
-        [taskPart("background-task", "background-session", "background")],
+        [taskPart("first-task", "first-session", "first")],
         "tool-calls",
         "2026-06-18T00:00:00Z",
       ),
       baseMessage(
-        [{ type: "text", text: "main resumed" }],
-        "stop",
-        "2026-06-18T00:30:00Z",
+        [taskPart("second-task", "second-session", "second")],
+        "tool-calls",
+        "2026-06-18T00:02:00Z",
       ),
     ],
-    subagent_transcripts: [backgroundTranscript],
+    subagent_transcripts: [firstTranscript, secondTranscript],
   });
 
-  const state = await readIdentityState(page, ".message-item");
-  const subagentSpacers = state.timelineSpacers.filter(
-    (spacer) => spacer.trackKind === "subagent",
-  );
+  const beforeExpansion = await readIdentityState(page, ".message-item");
+  const firstToolButton = page
+    .locator('[data-tool-result-button="msg0__tool0-first-task"]')
+    .first();
+  await firstToolButton.click();
+  await page.waitForTimeout(100);
+  const afterExpansion = await readIdentityState(page, ".message-item");
 
   assert(
-    state.timelineIdleBreaks.length === 1 &&
-      state.timelineIdleBreaks[0].trackKind === "main" &&
-      state.timelineIdleBreaks[0].minutes === 30,
-    "main idle should still render as one main-track idle marker",
-    state,
+    beforeExpansion.connectors.length === 2 &&
+      beforeExpansion.connectors.every(hasAlignedConnector),
+    "connectors should align before inline tool expansion",
+    beforeExpansion,
   );
   assert(
-    subagentSpacers.length === 2 &&
-      subagentSpacers.some((spacer) => spacer.minutes === 12) &&
-      subagentSpacers.some((spacer) => spacer.minutes === 3),
-    "subagent elapsed time during main idle should remain visible",
-    state,
+    afterExpansion.connectors.length === 2 &&
+      afterExpansion.connectors.every(hasAlignedConnector),
+    "connectors should realign after inline tool expansion changes card heights",
+    afterExpansion,
   );
   assert(
-    subagentSpacers.every(hasUniformSpacerScale),
-    "subagent elapsed time during main idle should use the uniform minute scale",
-    state,
+    afterExpansion.timelineSpacers.length === 0 &&
+      afterExpansion.timelineIdleBreaks.length === 0,
+    "connector realignment should not reintroduce timestamp timeline spacers",
+    afterExpansion,
+  );
+  assert(
+    afterExpansion.alignmentSpacers.every(
+      (spacer) => spacer.status === "aligned" && spacer.connectorHeight > 0,
+    ),
+    "alignment spacers should record connector-aware measurements after expansion",
+    afterExpansion,
   );
 
   await page.close();
-  return state;
+  return { beforeExpansion, afterExpansion };
 }
 
 const browser = await chromium.launch({ headless: true });
@@ -852,9 +823,8 @@ try {
     repeatedTopLevelTranscript: await verifyRepeatedTopLevelTranscript(browser),
     repeatedNestedTranscript: await verifyRepeatedNestedTranscript(browser),
     toolBodyIds: await verifyToolBodyIds(browser),
-    longMainIdleCollapse: await verifyLongMainIdleCollapse(browser),
-    subagentElapsedDuringMainIdle:
-      await verifySubagentElapsedDuringMainIdle(browser),
+    connectorAlignmentAfterExpansion:
+      await verifyConnectorAlignmentAfterExpansion(browser),
   };
   console.log(JSON.stringify({ ok: true, results }, null, 2));
 } catch (error) {

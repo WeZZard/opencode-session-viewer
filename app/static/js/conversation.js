@@ -13,10 +13,7 @@ let urlSearchQuery = ""; // Search query from URL (for highlighting)
 let sidebarNavigationLock = null;
 let selectedAgentId = "main";
 const expandedToolResults = new Set();
-const TIMELINE_PIXELS_PER_MINUTE = 14;
-const TIMELINE_IDLE_THRESHOLD_MINUTES = 10;
-const TIMELINE_IDLE_BREAK_PX = 36;
-const TIMELINE_MIN_SPACER_PX = 8;
+let alignmentFrame = null;
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -189,92 +186,6 @@ function getActivityDomId(activityPath) {
 
 function getSpawnPromptDomId(subagentPath) {
   return `spawn-prompt-${domId(subagentPath)}`;
-}
-
-function getTimestampMs(value) {
-  if (!value) return null;
-  const time = new Date(value).getTime();
-  return Number.isFinite(time) ? time : null;
-}
-
-function getTimelineStartMs() {
-  return getTimestampMs(SESSION_DATA?.messages?.[0]?.time_created);
-}
-
-function getTimelineSpacerPx(deltaMs) {
-  if (!deltaMs || deltaMs <= 0) return 0;
-  const minutes = deltaMs / 60000;
-  return Math.max(TIMELINE_MIN_SPACER_PX, minutes * TIMELINE_PIXELS_PER_MINUTE);
-}
-
-function getTimelineIdleBreaks() {
-  const breaks = [];
-  const messages = SESSION_DATA?.messages || [];
-  let previousMs = getTimestampMs(messages[0]?.time_created);
-
-  messages.slice(1).forEach((msg) => {
-    const currentMs = getTimestampMs(msg.time_created);
-    if (previousMs !== null && currentMs !== null) {
-      const durationMs = currentMs - previousMs;
-      if (durationMs >= TIMELINE_IDLE_THRESHOLD_MINUTES * 60000) {
-        breaks.push({
-          startMs: previousMs,
-          endMs: currentMs,
-          durationMs,
-        });
-      }
-    }
-    if (currentMs !== null) previousMs = currentMs;
-  });
-
-  return breaks;
-}
-
-function getNormalizedTimelineMs(timeMs, idleBreaks = getTimelineIdleBreaks()) {
-  if (timeMs === null || timeMs === undefined) return null;
-  let normalizedMs = timeMs;
-
-  idleBreaks.forEach((idleBreak) => {
-    if (timeMs >= idleBreak.endMs) {
-      normalizedMs -= idleBreak.durationMs;
-    } else if (timeMs > idleBreak.startMs) {
-      normalizedMs -= timeMs - idleBreak.startMs;
-    }
-  });
-
-  return normalizedMs;
-}
-
-function getTrackTimelineMs(timeMs, trackStartMs, idleBreaks) {
-  if (timeMs === null || timeMs === undefined) return null;
-  if (trackStartMs === null || trackStartMs === undefined) {
-    return getNormalizedTimelineMs(timeMs, idleBreaks);
-  }
-  if (timeMs <= trackStartMs) {
-    return getNormalizedTimelineMs(timeMs, idleBreaks);
-  }
-
-  const visibleTrackStartMs = getNormalizedTimelineMs(trackStartMs, idleBreaks);
-  if (visibleTrackStartMs === null) {
-    return getNormalizedTimelineMs(timeMs, idleBreaks);
-  }
-
-  return visibleTrackStartMs + (timeMs - trackStartMs);
-}
-
-function getCrossedIdleBreaks(startMs, endMs, idleBreaks) {
-  if (
-    startMs === null ||
-    startMs === undefined ||
-    endMs === null ||
-    endMs === undefined
-  ) {
-    return [];
-  }
-
-  return idleBreaks.filter(
-    (idleBreak) => idleBreak.startMs >= startMs && idleBreak.endMs <= endMs,
-  );
 }
 
 function getToolOccurrenceSegment(part, partIndex) {
@@ -873,6 +784,8 @@ function setToolResultExpanded(activityPath, expanded) {
   } else {
     expandedToolResults.delete(activityPath);
   }
+
+  scheduleSubagentAlignment();
 
   return card;
 }
@@ -1627,32 +1540,11 @@ function renderAgentConnector(track) {
     `;
 }
 
-function formatTimelineOffset(minutes) {
-  if (minutes < 1) return `${Math.round(minutes * 60)}s`;
-  if (minutes < 60) return `${minutes.toFixed(minutes < 10 ? 1 : 0)}m`;
-  const hours = minutes / 60;
-  return `${hours.toFixed(hours < 10 ? 1 : 0)}h`;
-}
-
-function renderTimelineSpacer(deltaMs) {
-  const spacerPx = getTimelineSpacerPx(deltaMs);
-  if (!spacerPx) return "";
-  const minutes = deltaMs / 60000;
+function renderAlignmentSpacer(track) {
+  if (track.kind !== "subagent") return "";
 
   return `
-        <div class="timeline-spacer" style="height:${spacerPx.toFixed(1)}px" data-offset-minutes="${minutes.toFixed(3)}">
-            <span>${formatTimelineOffset(minutes)}</span>
-        </div>
-    `;
-}
-
-function renderTimelineIdleBreak(idleBreak) {
-  const minutes = idleBreak.durationMs / 60000;
-
-  return `
-        <div class="timeline-idle-break" style="height:${TIMELINE_IDLE_BREAK_PX}px" data-idle-minutes="${minutes.toFixed(3)}">
-            <span>main idle ${formatTimelineOffset(minutes)}</span>
-        </div>
+        <div class="agent-alignment-spacer" data-align-agent-id="${escAttr(track.id)}" data-alignment-offset-px="0" style="height:0px"></div>
     `;
 }
 
@@ -1716,52 +1608,13 @@ function renderAgentMessage(msg, track, messageIndex) {
 
 function renderAgentTrack(track, activeSearch) {
   const subagents = track.subagents || [];
-  const timelineStartMs = getTimelineStartMs();
-  const idleBreaks = getTimelineIdleBreaks();
-  const trackStartMs =
-    track.id === "main"
-      ? null
-      : (getTimestampMs(track.sourceTime) ??
-        getTimestampMs(track.messages?.[0]?.time_created));
-  let previousActualTimeMs = timelineStartMs;
-  let previousVisibleTimeMs = getNormalizedTimelineMs(
-    timelineStartMs,
-    idleBreaks,
-  );
   const visibleMessages = track.messages
     .map((msg, index) => {
       if (!shouldShowMessageInTranscriptList(msg, activeSearch, subagents)) {
         return "";
       }
 
-      const fallbackTimeMs =
-        index === 0
-          ? (getTimestampMs(track.sourceTime) ?? previousVisibleTimeMs)
-          : previousActualTimeMs;
-      const currentActualTimeMs =
-        getTimestampMs(msg.time_created) ?? fallbackTimeMs;
-      const currentVisibleTimeMs =
-        track.id === "main"
-          ? getNormalizedTimelineMs(currentActualTimeMs, idleBreaks)
-          : getTrackTimelineMs(currentActualTimeMs, trackStartMs, idleBreaks);
-      const idleMarkers =
-        track.id === "main"
-          ? getCrossedIdleBreaks(
-              previousActualTimeMs,
-              currentActualTimeMs,
-              idleBreaks,
-            )
-              .map((idleBreak) => renderTimelineIdleBreak(idleBreak))
-              .join("")
-          : "";
-      const spacer =
-        currentVisibleTimeMs !== null && previousVisibleTimeMs !== null
-          ? renderTimelineSpacer(currentVisibleTimeMs - previousVisibleTimeMs)
-          : "";
-      previousActualTimeMs = currentActualTimeMs ?? previousActualTimeMs;
-      previousVisibleTimeMs = currentVisibleTimeMs ?? previousVisibleTimeMs;
-
-      return idleMarkers + spacer + renderAgentMessage(msg, track, index);
+      return renderAgentMessage(msg, track, index);
     })
     .join("");
   const active = track.id === selectedAgentId;
@@ -1778,10 +1631,77 @@ function renderAgentTrack(track, activeSearch) {
             </div>
             ${renderAgentConnector(track)}
             <div class="agent-track-body">
-                ${visibleMessages || '<div class="agent-track-empty">No messages match the current filters.</div>'}
+                ${visibleMessages ? renderAlignmentSpacer(track) + visibleMessages : '<div class="agent-track-empty">No messages match the current filters.</div>'}
             </div>
         </section>
     `;
+}
+
+function alignSubagentTracks() {
+  const spacers = Array.from(
+    document.querySelectorAll(".agent-alignment-spacer"),
+  );
+  spacers.forEach((spacer) => {
+    spacer.style.height = "0px";
+    spacer.style.marginTop = "0px";
+    spacer.dataset.alignmentOffsetPx = "0";
+    spacer.dataset.alignmentStatus = "pending";
+    spacer.classList.remove("unlinked");
+  });
+
+  // Force layout after resetting heights so nested tracks measure parent
+  // messages after their parent track has been aligned in DOM order.
+  void document.body.offsetHeight;
+
+  document
+    .querySelectorAll('.agent-track[data-track-kind="subagent"]')
+    .forEach((track) => {
+      const spacer = track.querySelector(
+        ":scope > .agent-track-body > .agent-alignment-spacer",
+      );
+      if (!spacer) return;
+
+      const connector = track.querySelector(":scope > .agent-connector");
+      const parentMessageId = connector?.dataset.sourceMessageId || "";
+      const firstMessageId = connector?.dataset.firstMessageId || "";
+      const parentMessage = document.getElementById(parentMessageId);
+      const firstMessage = document.getElementById(firstMessageId);
+
+      if (!connector || !parentMessage || !firstMessage) {
+        spacer.dataset.alignmentStatus = "unlinked";
+        spacer.classList.add("unlinked");
+        return;
+      }
+
+      const parentTop = parentMessage.getBoundingClientRect().top;
+      const firstTop = firstMessage.getBoundingClientRect().top;
+      const offsetPx = parentTop - firstTop;
+      const connectorHeight = connector.getBoundingClientRect().height;
+
+      if (offsetPx >= 0) {
+        spacer.style.height = `${offsetPx.toFixed(1)}px`;
+        spacer.style.marginTop = "0px";
+      } else {
+        spacer.style.height = "0px";
+        spacer.style.marginTop = `${offsetPx.toFixed(1)}px`;
+      }
+      spacer.dataset.alignmentOffsetPx = offsetPx.toFixed(1);
+      spacer.dataset.alignmentStatus = "aligned";
+      spacer.dataset.connectorHeightPx = connectorHeight.toFixed(1);
+      spacer.dataset.parentMessageId = parentMessageId;
+      spacer.dataset.firstMessageId = firstMessageId;
+    });
+}
+
+function scheduleSubagentAlignment() {
+  if (alignmentFrame !== null) {
+    cancelAnimationFrame(alignmentFrame);
+  }
+
+  alignmentFrame = requestAnimationFrame(() => {
+    alignmentFrame = null;
+    alignSubagentTracks();
+  });
 }
 
 // Render timeline
@@ -1804,6 +1724,7 @@ function renderTimeline() {
 
   // Apply syntax highlighting to all code blocks
   applySyntaxHighlighting();
+  scheduleSubagentAlignment();
 }
 
 // Apply syntax highlighting to code blocks
@@ -2023,6 +1944,7 @@ function initConversation() {
   // Resize handler for sparkline
   window.addEventListener("resize", () => {
     renderSparkline();
+    scheduleSubagentAlignment();
   });
 
   // Load data from script tag
