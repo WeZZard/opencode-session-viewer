@@ -177,6 +177,17 @@ async function readIdentityState(page, selector) {
           };
         },
       ),
+      activityStreamCount: document.querySelectorAll("#activityStream").length,
+      mainContentAgentFilters: document.querySelectorAll(
+        '.timeline > .agent-filter, .agent-filter[data-agent-filter-location="main"]',
+      ).length,
+      timelineSpacers: Array.from(
+        document.querySelectorAll(".timeline-spacer"),
+      ).map((el) => ({
+        minutes: Number(el.dataset.offsetMinutes || 0),
+        text: el.textContent.replace(/\s+/g, " ").trim(),
+        height: Number.parseFloat(el.style.height || "0"),
+      })),
       toolBodyIds: Array.from(document.querySelectorAll(".tool-body")).map(
         (el) => el.id,
       ),
@@ -207,12 +218,17 @@ async function readIdentityState(page, selector) {
         id: el.id,
         path: el.dataset.activityPath || null,
         linkedSubagentPath: el.dataset.linkedSubagentPath || null,
+        visible:
+          window.getComputedStyle(el).display !== "none" &&
+          el.getAttribute("aria-hidden") !== "true",
+        insideMessageGroup: Boolean(el.closest(".agent-message-group")),
         text: el.textContent.replace(/\s+/g, " ").trim(),
       })),
       toolRefs: Array.from(document.querySelectorAll(".part-activity-ref")).map(
         (el) => ({
           path: el.dataset.activityPath || null,
           linkedSubagentPath: el.dataset.linkedSubagentPath || null,
+          hasButton: Boolean(el.querySelector("[data-tool-result-button]")),
           text: el.textContent.replace(/\s+/g, " ").trim(),
         }),
       ),
@@ -220,10 +236,14 @@ async function readIdentityState(page, selector) {
   }, selector);
 }
 
-function baseMessage(parts, finish = "tool-calls") {
+function baseMessage(
+  parts,
+  finish = "tool-calls",
+  time = "2026-06-18T00:00:00Z",
+) {
   return {
     role: "assistant",
-    time_created: "2026-06-18T00:00:00Z",
+    time_created: time,
     finish,
     parts,
   };
@@ -248,15 +268,29 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     task_part_id: "unused-shared-task",
     agent_type: "general",
     summary: { id: "shared-session", title: "Shared transcript" },
-    messages: [baseMessage([{ type: "text", text: "shared answer" }], "stop")],
+    messages: [
+      baseMessage(
+        [{ type: "text", text: "shared answer" }],
+        "stop",
+        "2026-06-18T00:01:00Z",
+      ),
+    ],
     subagent_transcripts: [],
   };
 
   await runSyntheticSession(page, {
     id: "top-level-repeat",
     messages: [
-      baseMessage([taskPart("main-a", "shared-session", "main A")]),
-      baseMessage([taskPart("main-b", "shared-session", "main B")]),
+      baseMessage(
+        [taskPart("main-a", "shared-session", "main A")],
+        "tool-calls",
+        "2026-06-18T00:00:00Z",
+      ),
+      baseMessage(
+        [taskPart("main-b", "shared-session", "main B")],
+        "tool-calls",
+        "2026-06-18T00:02:00Z",
+      ),
     ],
     subagent_transcripts: [sharedTranscript],
   });
@@ -305,13 +339,23 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     state,
   );
   assert(
-    state.agentFilters.length === 2 &&
+    state.agentFilters.length === 1 &&
       state.agentFilters.every((filter) => filter.options.length === 3) &&
       state.agentFilters.every(
         (filter) =>
           filter.options.filter((option) => option.active).length === 1,
       ),
-    "top-level agent filter did not expose one selected track in each location",
+    "top-level sidebar agent filter did not expose exactly one selected track",
+    state,
+  );
+  assert(
+    state.mainContentAgentFilters === 0,
+    "top-level main content should not render an agent selector",
+    state,
+  );
+  assert(
+    state.activityStreamCount === 0,
+    "top-level tool results should not render in a bottom activity stream",
     state,
   );
   assert(
@@ -341,8 +385,18 @@ async function verifyRepeatedTopLevelTranscript(browser) {
   );
   assert(
     state.toolActivities.length === 2 &&
-      state.toolActivities.every((activity) => activity.linkedSubagentPath),
-    "task tool results were not detached with subagent links",
+      state.toolActivities.every(
+        (activity) =>
+          activity.linkedSubagentPath &&
+          activity.insideMessageGroup &&
+          !activity.visible,
+      ),
+    "task tool results were not hidden inline cards with subagent links",
+    state,
+  );
+  assert(
+    state.toolRefs.length === 2 && state.toolRefs.every((ref) => ref.hasButton),
+    "task tool references are missing inline result buttons",
     state,
   );
   assert(
@@ -352,7 +406,12 @@ async function verifyRepeatedTopLevelTranscript(browser) {
       state.toolActivities.some((activity) =>
         activity.text.includes("main B done"),
       ),
-    "task tool outputs are missing from detached activity cards",
+    "task tool outputs are missing from inline result cards",
+    state,
+  );
+  assert(
+    state.timelineSpacers.some((spacer) => spacer.minutes >= 1),
+    "top-level tracks did not include timestamp-based spacers",
     state,
   );
   await page.close();
@@ -365,7 +424,13 @@ async function verifyRepeatedNestedTranscript(browser) {
     task_part_id: "unused-child-task",
     agent_type: "general",
     summary: { id: "child-session", title: "Repeated child transcript" },
-    messages: [baseMessage([{ type: "text", text: "child answer" }], "stop")],
+    messages: [
+      baseMessage(
+        [{ type: "text", text: "child answer" }],
+        "stop",
+        "2026-06-18T00:03:00Z",
+      ),
+    ],
     subagent_transcripts: [],
   };
   const parentTranscript = {
@@ -373,8 +438,16 @@ async function verifyRepeatedNestedTranscript(browser) {
     agent_type: "general",
     summary: { id: "parent-session", title: "Parent transcript" },
     messages: [
-      baseMessage([taskPart("child-a", "child-session", "child A")]),
-      baseMessage([taskPart("child-b", "child-session", "child B")]),
+      baseMessage(
+        [taskPart("child-a", "child-session", "child A")],
+        "tool-calls",
+        "2026-06-18T00:01:00Z",
+      ),
+      baseMessage(
+        [taskPart("child-b", "child-session", "child B")],
+        "tool-calls",
+        "2026-06-18T00:02:00Z",
+      ),
     ],
     subagent_transcripts: [childTranscript],
   };
@@ -382,7 +455,11 @@ async function verifyRepeatedNestedTranscript(browser) {
   await runSyntheticSession(page, {
     id: "nested-repeat",
     messages: [
-      baseMessage([taskPart("parent-task", "parent-session", "parent")]),
+      baseMessage(
+        [taskPart("parent-task", "parent-session", "parent")],
+        "tool-calls",
+        "2026-06-18T00:00:00Z",
+      ),
     ],
     subagent_transcripts: [parentTranscript],
   });
@@ -441,6 +518,24 @@ async function verifyRepeatedNestedTranscript(browser) {
     state,
   );
   assert(
+    state.mainContentAgentFilters === 0,
+    "nested main content should not render an agent selector",
+    state,
+  );
+  assert(
+    state.agentFilters.length === 1 &&
+      state.agentFilters[0].options.length === 4 &&
+      state.agentFilters[0].options.filter((option) => option.active).length ===
+        1,
+    "nested sidebar agent filter did not expose exactly one selected track",
+    state,
+  );
+  assert(
+    state.activityStreamCount === 0,
+    "nested tool results should not render in a bottom activity stream",
+    state,
+  );
+  assert(
     state.rows.length === 1 &&
       state.rows[0].agentId === selectedAgentId &&
       state.rows[0].messageIndex === "0",
@@ -464,7 +559,19 @@ async function verifyRepeatedNestedTranscript(browser) {
       state.toolActivities.some((activity) =>
         activity.text.includes("child B done"),
       ),
-    "nested task tool outputs are missing from detached activity cards",
+    "nested task tool outputs are missing from inline result cards",
+    state,
+  );
+  assert(
+    state.toolActivities.every(
+      (activity) => activity.insideMessageGroup && !activity.visible,
+    ),
+    "nested tool results should be hidden inline cards before expansion",
+    state,
+  );
+  assert(
+    state.timelineSpacers.some((spacer) => spacer.minutes >= 1),
+    "nested tracks did not include timestamp-based spacers",
     state,
   );
   await page.close();
@@ -504,7 +611,7 @@ async function verifyToolBodyIds(browser) {
   );
   assert(
     state.toolBodyIds.length === 2,
-    "expected both tool outputs to render",
+    "expected both tool output bodies to exist",
     state,
   );
   assert(
@@ -515,18 +622,58 @@ async function verifyToolBodyIds(browser) {
   assert(
     state.toolActivities.length === 2 &&
       state.toolActivities[0].text.includes("one") &&
-      state.toolActivities[1].text.includes("two"),
-    "detached tool activities do not include both outputs",
+      state.toolActivities[1].text.includes("two") &&
+      state.toolActivities.every(
+        (activity) => activity.insideMessageGroup && !activity.visible,
+      ),
+    "inline tool activities do not include both hidden outputs",
     state,
   );
   assert(
     state.toolRefs.length === 2 &&
-      new Set(state.toolRefs.map((ref) => ref.path)).size === 2,
-    "message tool references do not point at distinct activities",
+      new Set(state.toolRefs.map((ref) => ref.path)).size === 2 &&
+      state.toolRefs.every((ref) => ref.hasButton),
+    "message tool references do not point at distinct inline result buttons",
     state,
   );
+  assert(
+    state.activityStreamCount === 0,
+    "tool outputs should not render in a bottom activity stream",
+    state,
+  );
+
+  await page.locator("[data-tool-result-button]").first().click();
+  await page.waitForTimeout(100);
+  const expandedFromMessage = await readIdentityState(page, ".message-item");
+  const visibleFromMessage = expandedFromMessage.toolActivities.filter(
+    (activity) => activity.visible,
+  );
+  assert(
+    visibleFromMessage.length === 1 &&
+      visibleFromMessage[0].text.includes("one") &&
+      visibleFromMessage[0].insideMessageGroup,
+    "message tool result button did not reveal exactly one inline result",
+    expandedFromMessage,
+  );
+
+  await page
+    .locator('.message-item.tool-entry[data-activity-path="msg0__tool1-bash"]')
+    .click();
+  await page.waitForTimeout(100);
+  const expandedFromSidebar = await readIdentityState(page, ".message-item");
+  const visibleFromSidebar = expandedFromSidebar.toolActivities.filter(
+    (activity) => activity.visible,
+  );
+  assert(
+    visibleFromSidebar.length === 2 &&
+      visibleFromSidebar.some((activity) => activity.text.includes("two")) &&
+      expandedFromSidebar.activeRows.length === 1 &&
+      expandedFromSidebar.activeRows[0].activityPath === "msg0__tool1-bash",
+    "sidebar tool row did not reveal and activate the inline result",
+    expandedFromSidebar,
+  );
   await page.close();
-  return state;
+  return expandedFromSidebar;
 }
 
 const browser = await chromium.launch({ headless: true });

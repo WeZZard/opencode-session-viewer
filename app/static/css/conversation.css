@@ -455,10 +455,6 @@ body {
   padding: 24px;
 }
 
-.timeline > .agent-filter {
-  margin-bottom: 14px;
-}
-
 .agent-track-lanes {
   display: flex;
   align-items: flex-start;
@@ -530,6 +526,33 @@ body {
   padding: 16px 0;
   color: var(--text-tertiary);
   font-size: 12px;
+}
+
+.timeline-spacer {
+  position: relative;
+  min-height: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.timeline-spacer::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  right: 8px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.timeline-spacer span {
+  position: relative;
+  z-index: 1;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-primary);
 }
 
 .agent-connector {
@@ -605,8 +628,12 @@ body {
   scroll-margin-top: 24px;
 }
 
-.agent-track-message {
-  margin-bottom: 16px;
+.agent-message-group {
+  margin-bottom: 24px;
+}
+
+.agent-message-group .agent-track-message {
+  margin-bottom: 0;
 }
 
 .message.user {
@@ -1018,6 +1045,21 @@ pre.tool-code code {
 .activity-link:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.inline-tool-results {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.inline-tool-result {
+  display: none;
+}
+
+.inline-tool-result.expanded {
+  display: block;
 }
 
 /* Step markers */

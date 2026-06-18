@@ -12,6 +12,10 @@ let currentMessageIndex = 0;
 let urlSearchQuery = ""; // Search query from URL (for highlighting)
 let sidebarNavigationLock = null;
 let selectedAgentId = "main";
+const expandedToolResults = new Set();
+const TIMELINE_PIXELS_PER_MINUTE = 18;
+const TIMELINE_MIN_SPACER_PX = 8;
+const TIMELINE_MAX_SPACER_PX = 420;
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -186,6 +190,25 @@ function getSpawnPromptDomId(subagentPath) {
   return `spawn-prompt-${domId(subagentPath)}`;
 }
 
+function getTimestampMs(value) {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function getTimelineStartMs() {
+  return getTimestampMs(SESSION_DATA?.messages?.[0]?.time_created);
+}
+
+function getTimelineSpacerPx(deltaMs) {
+  if (!deltaMs || deltaMs <= 0) return 0;
+  const minutes = deltaMs / 60000;
+  return Math.min(
+    TIMELINE_MAX_SPACER_PX,
+    Math.max(TIMELINE_MIN_SPACER_PX, minutes * TIMELINE_PIXELS_PER_MINUTE),
+  );
+}
+
 function getToolOccurrenceSegment(part, partIndex) {
   return `tool${partIndex}-${part?.id || part?.tool || "tool"}`;
 }
@@ -288,6 +311,7 @@ function getAgentTracks() {
       sourceMessageIndex: null,
       sourcePartIndex: null,
       sourcePartId: "",
+      sourceTime: SESSION_DATA.messages?.[0]?.time_created || "",
       pathSegments: [],
       transcript: null,
       spawnPrompt: "",
@@ -305,6 +329,7 @@ function getAgentTracks() {
           sourceMessageIndex: messageIndex,
           sourcePartIndex: partIndex,
           sourcePartId: part?.id || "",
+          sourceTime: msg.time_created || "",
           pathSegments: [
             getSubagentOccurrenceSegment(part, transcript, partIndex),
           ],
@@ -325,6 +350,7 @@ function getAgentTracks() {
       sourceMessageIndex: null,
       sourcePartIndex: null,
       sourcePartId: transcript.task_part_id || "",
+      sourceTime: transcript.messages?.[0]?.time_created || "",
       pathSegments: [`unlinked-${key}`],
       parentActivityPath: "",
       spawnPrompt: "",
@@ -360,6 +386,7 @@ function collectAgentTrack(tracks, seenTranscriptKeys, transcript, context) {
     sourceMessageIndex: context.sourceMessageIndex,
     sourcePartIndex: context.sourcePartIndex,
     sourcePartId: context.sourcePartId || "",
+    sourceTime: context.sourceTime || "",
     pathSegments: context.pathSegments,
     transcript,
     spawnPrompt: context.spawnPrompt || "",
@@ -379,6 +406,7 @@ function collectAgentTrack(tracks, seenTranscriptKeys, transcript, context) {
         sourceMessageIndex: messageIndex,
         sourcePartIndex: partIndex,
         sourcePartId: part?.id || "",
+        sourceTime: msg.time_created || context.sourceTime || "",
         pathSegments: [
           ...context.pathSegments,
           `msg${messageIndex}`,
@@ -688,10 +716,7 @@ function setActiveSidebarMessage(idx) {
 
 function setActiveSidebarActivity(activityPath) {
   document.querySelectorAll(".message-item").forEach((item) => {
-    item.classList.toggle(
-      "active",
-      item.dataset.activityPath === activityPath && !item.dataset.subagentId,
-    );
+    item.classList.toggle("active", item.dataset.activityPath === activityPath);
   });
 }
 
@@ -762,20 +787,76 @@ function scrollToSubagentMessage(
   scrollToAgentMessage(subagentPath, subagentIndex);
 }
 
-function scrollToActivity(activityPath) {
-  const el = document.getElementById(getActivityDomId(activityPath));
+function setToolResultExpanded(activityPath, expanded) {
+  const card = document.getElementById(getActivityDomId(activityPath));
+  if (!card) return null;
+
+  card.classList.toggle("expanded", expanded);
+  card.setAttribute("aria-hidden", expanded ? "false" : "true");
+  document
+    .querySelectorAll(`[data-tool-result-button="${CSS.escape(activityPath)}"]`)
+    .forEach((button) => {
+      button.setAttribute("aria-expanded", expanded ? "true" : "false");
+      button.textContent = expanded ? "hide result" : "tool result";
+    });
+
+  if (expanded) {
+    expandedToolResults.add(activityPath);
+  } else {
+    expandedToolResults.delete(activityPath);
+  }
+
+  return card;
+}
+
+function showToolResult(activityPath, agentId = "", messageIndex = null) {
+  if (agentId && selectedAgentId !== agentId) {
+    selectedAgentId = agentId;
+    sidebarNavigationLock = null;
+    renderSidebar();
+    renderTimeline();
+    requestAnimationFrame(() =>
+      showToolResult(activityPath, agentId, messageIndex),
+    );
+    return;
+  }
+
+  const el = setToolResultExpanded(activityPath, true);
   if (!el) return;
 
   sidebarNavigationLock = { kind: "activity", activityPath };
   clearHighlightedTargets();
 
-  el.scrollIntoView({ behavior: "smooth", block: "start" });
+  el.scrollIntoView({ behavior: "smooth", block: "start", inline: "center" });
   el.classList.add("highlighted");
   setActiveSidebarActivity(activityPath);
+
+  if (agentId && Number.isFinite(messageIndex)) {
+    const track = getAgentTracks().find(
+      (candidate) => candidate.id === agentId,
+    );
+    updateViz(track?.id === "main" ? messageIndex : track?.parentIndex || 0);
+  }
 
   setTimeout(() => {
     el.classList.remove("highlighted");
   }, 2000);
+}
+
+function toggleToolResult(activityPath) {
+  const el = document.getElementById(getActivityDomId(activityPath));
+  if (!el) return;
+
+  if (el.classList.contains("expanded")) {
+    setToolResultExpanded(activityPath, false);
+    return;
+  }
+
+  showToolResult(activityPath);
+}
+
+function scrollToActivity(activityPath) {
+  showToolResult(activityPath);
 }
 
 // Detect visible message on scroll
@@ -1033,7 +1114,7 @@ function renderSidebar() {
           .filter(Boolean)
           .join(" ");
         const clickHandler = isTool
-          ? "scrollToActivity(this.dataset.activityPath)"
+          ? "showToolResult(this.dataset.activityPath, this.dataset.agentId, Number(this.dataset.messageIndex))"
           : "scrollToAgentMessage(this.dataset.agentId, Number(this.dataset.messageIndex))";
         const dataAttrs = isTool
           ? `data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.messageIndex}" data-index="${item.parentIndex}" data-activity-path="${escAttr(item.activityPath)}" data-activity-kind="tool"`
@@ -1125,7 +1206,12 @@ function buildSidebarItems(activeSearch) {
   const agentTitle = getAgentTitle(track);
 
   track.messages.forEach((msg, index) => {
-    if (shouldShowMessageInTranscriptList(msg, activeSearch, subagents)) {
+    const showMessage = shouldShowMessageInTranscriptList(
+      msg,
+      activeSearch,
+      subagents,
+    );
+    if (showMessage) {
       items.push({
         kind: "message",
         agentId: track.id,
@@ -1136,22 +1222,22 @@ function buildSidebarItems(activeSearch) {
         index,
         parentIndex: track.id === "main" ? index : track.parentIndex || 0,
       });
-    }
 
-    collectToolSidebarItems(
-      msg,
-      {
-        parentIndex: track.id === "main" ? index : track.parentIndex || 0,
-        agentId: track.id,
-        messageIndex: index,
-        subagents,
-        subagentPathSegments:
-          track.id === "main" ? [] : [...track.pathSegments, `msg${index}`],
-        context: `${agentTitle} · Message ${index + 1}`,
-      },
-      activeSearch,
-      items,
-    );
+      collectToolSidebarItems(
+        msg,
+        {
+          parentIndex: track.id === "main" ? index : track.parentIndex || 0,
+          agentId: track.id,
+          messageIndex: index,
+          subagents,
+          subagentPathSegments:
+            track.id === "main" ? [] : [...track.pathSegments, `msg${index}`],
+          context: `${agentTitle} · Message ${index + 1}`,
+        },
+        activeSearch,
+        items,
+      );
+    }
   });
 
   return items;
@@ -1188,66 +1274,20 @@ function collectToolSidebarItems(msg, context, activeSearch, items) {
   });
 }
 
-function buildActivityItems(activeSearch) {
+function buildMessageToolActivities(msg, context) {
   const activities = [];
-  const subagents = SESSION_DATA.subagent_transcripts || [];
 
-  SESSION_DATA.messages.forEach((msg, parentIndex) => {
-    collectToolActivities(
-      msg,
-      {
-        parentIndex,
-        subagents,
-        subagentPathSegments: [],
-        parentActivityPath: "",
-      },
-      activeSearch,
-      activities,
-    );
-
-    getMessageSubagentTranscriptRefs(msg, subagents).forEach(
-      ({ part, partIndex, transcript }) => {
-        collectSubagentActivity(
-          transcript,
-          {
-            parentIndex,
-            sourcePartIndex: partIndex,
-            sourcePartId: part?.id || "",
-            pathSegments: [
-              getSubagentOccurrenceSegment(part, transcript, partIndex),
-            ],
-            parentActivityPath: "",
-          },
-          activeSearch,
-          activities,
-        );
-      },
-    );
-  });
-
-  return activities;
-}
-
-function collectToolActivities(msg, context, activeSearch, activities) {
   (msg.parts || []).forEach((part, partIndex) => {
     if (part.type !== "tool") return;
-
-    const activityPath = getToolActivityPath(part, {
-      ...context,
-      partIndex,
-    });
-    const text = getToolText(part);
-    if (
-      activeSearch &&
-      !text.toLowerCase().includes(activeSearch.toLowerCase())
-    ) {
-      return;
-    }
 
     const transcript =
       part.tool === "task"
         ? getSubagentTranscriptForPart(part, context.subagents)
         : null;
+    const activityPath = getToolActivityPath(part, {
+      ...context,
+      partIndex,
+    });
 
     activities.push({
       kind: "tool",
@@ -1263,80 +1303,8 @@ function collectToolActivities(msg, context, activeSearch, activities) {
       part,
     });
   });
-}
 
-function collectSubagentActivity(
-  transcript,
-  context,
-  activeSearch,
-  activities,
-) {
-  const activityPath = getSubagentOccurrencePath(
-    context.parentIndex,
-    context.pathSegments,
-  );
-  const subagents = transcript.subagent_transcripts || [];
-
-  (transcript.messages || []).forEach((msg, subagentIndex) => {
-    const messagePathSegments = [
-      ...context.pathSegments,
-      `msg${subagentIndex}`,
-    ];
-
-    collectToolActivities(
-      msg,
-      {
-        parentIndex: context.parentIndex,
-        subagents,
-        subagentPathSegments: messagePathSegments,
-        parentActivityPath: activityPath,
-      },
-      activeSearch,
-      activities,
-    );
-
-    getMessageSubagentTranscriptRefs(msg, subagents).forEach(
-      ({ part, partIndex, transcript: childTranscript }) => {
-        collectSubagentActivity(
-          childTranscript,
-          {
-            parentIndex: context.parentIndex,
-            sourcePartIndex: partIndex,
-            sourcePartId: part?.id || "",
-            pathSegments: [
-              ...messagePathSegments,
-              getSubagentOccurrenceSegment(part, childTranscript, partIndex),
-            ],
-            parentActivityPath: activityPath,
-          },
-          activeSearch,
-          activities,
-        );
-      },
-    );
-  });
-}
-
-function renderActivityStream(activeSearch) {
-  const activities = buildActivityItems(activeSearch);
-  if (activities.length === 0) return "";
-
-  return `
-        <section class="activity-stream" id="activityStream">
-            <div class="activity-stream-header">
-                <div>
-                    <div class="activity-stream-title">Tool Results</div>
-                    <div class="activity-stream-subtitle">${activities.length} tool ${activities.length === 1 ? "result" : "results"}</div>
-                </div>
-            </div>
-            <div class="activity-stream-body">
-                ${activities
-                  .filter((activity) => activity.kind === "tool")
-                  .map((activity) => renderToolActivity(activity))
-                  .join("")}
-            </div>
-        </section>
-    `;
+  return activities;
 }
 
 function getSidebarMatchSnippet(item, query) {
@@ -1356,13 +1324,23 @@ function getSidebarMatchSnippet(item, query) {
   return snippet;
 }
 
-function renderActivityLink(activityPath, label) {
+function renderActivityLink(activityPath, label, options = {}) {
   if (!activityPath) return "";
-  return `<button type="button" class="activity-link" onclick="scrollToActivity('${escAttr(activityPath)}')">${esc(label)}</button>`;
+  const action = options.action || "scrollToActivity";
+  const expanded = expandedToolResults.has(activityPath);
+  const ariaExpanded =
+    action === "toggleToolResult"
+      ? ` aria-expanded="${expanded ? "true" : "false"}" data-tool-result-button="${escAttr(activityPath)}"`
+      : "";
+  const buttonLabel =
+    action === "toggleToolResult" && expanded ? "hide result" : label;
+  return `<button type="button" class="activity-link" onclick="${action}('${escAttr(activityPath)}')"${ariaExpanded}>${esc(buttonLabel)}</button>`;
 }
 
 function renderToolActivityLink(activityPath) {
-  return renderActivityLink(activityPath, "tool result");
+  return renderActivityLink(activityPath, "tool result", {
+    action: "toggleToolResult",
+  });
 }
 
 function renderSubagentActivityLink(activityPath) {
@@ -1464,9 +1442,10 @@ function renderToolActivity(activity) {
   const linkedSubagent = activity.linkedSubagentPath
     ? renderSubagentActivityLink(activity.linkedSubagentPath)
     : "";
+  const expanded = expandedToolResults.has(activity.activityPath);
 
   return `
-        <section class="activity-card tool-activity" id="${getActivityDomId(activity.activityPath)}" data-activity-kind="tool" data-activity-path="${escAttr(activity.activityPath)}" data-parent-message-index="${activity.parentIndex}" data-source-part-index="${activity.sourcePartIndex}" data-source-part-id="${escAttr(activity.sourcePartId)}" data-parent-activity-path="${escAttr(activity.parentActivityPath || "")}" data-linked-subagent-path="${escAttr(activity.linkedSubagentPath || "")}">
+        <section class="activity-card tool-activity inline-tool-result ${expanded ? "expanded" : ""}" id="${getActivityDomId(activity.activityPath)}" data-activity-kind="tool" data-activity-path="${escAttr(activity.activityPath)}" data-parent-message-index="${activity.parentIndex}" data-source-part-index="${activity.sourcePartIndex}" data-source-part-id="${escAttr(activity.sourcePartId)}" data-parent-activity-path="${escAttr(activity.parentActivityPath || "")}" data-linked-subagent-path="${escAttr(activity.linkedSubagentPath || "")}" aria-hidden="${expanded ? "false" : "true"}">
             <div class="activity-card-header">
                 <div class="activity-title-row">
                     <span class="activity-kind tool">tool</span>
@@ -1485,6 +1464,15 @@ function renderToolActivity(activity) {
                 ${renderToolSections(part) || '<div class="subagent-empty">No tool result recorded.</div>'}
             </div>
         </section>
+    `;
+}
+
+function renderInlineToolResults(activities) {
+  if (!activities.length) return "";
+  return `
+        <div class="inline-tool-results">
+            ${activities.map((activity) => renderToolActivity(activity)).join("")}
+        </div>
     `;
 }
 
@@ -1571,12 +1559,39 @@ function renderAgentConnector(track) {
     `;
 }
 
+function formatTimelineOffset(minutes) {
+  if (minutes < 1) return `${Math.round(minutes * 60)}s`;
+  if (minutes < 60) return `${minutes.toFixed(minutes < 10 ? 1 : 0)}m`;
+  const hours = minutes / 60;
+  return `${hours.toFixed(hours < 10 ? 1 : 0)}h`;
+}
+
+function renderTimelineSpacer(deltaMs) {
+  const spacerPx = getTimelineSpacerPx(deltaMs);
+  if (!spacerPx) return "";
+  const minutes = deltaMs / 60000;
+
+  return `
+        <div class="timeline-spacer" style="height:${spacerPx.toFixed(1)}px" data-offset-minutes="${minutes.toFixed(3)}">
+            <span>${formatTimelineOffset(minutes)}</span>
+        </div>
+    `;
+}
+
 function renderAgentMessage(msg, track, messageIndex) {
   const messageId = getAgentMessageDomId(track.id, messageIndex);
   const parentIndex =
     track.id === "main" ? messageIndex : track.parentIndex || 0;
   const subagentPathSegments =
     track.id === "main" ? [] : [...track.pathSegments, `msg${messageIndex}`];
+  const toolContext = {
+    subagents: track.subagents || [],
+    parentIndex,
+    partIndex: null,
+    subagentPathSegments,
+    parentActivityPath: track.id === "main" ? "" : track.id,
+  };
+  const toolActivities = buildMessageToolActivities(msg, toolContext);
   const copyButton =
     track.id === "main"
       ? `
@@ -1587,47 +1602,63 @@ function renderAgentMessage(msg, track, messageIndex) {
       : "";
 
   return `
-                <div class="message ${msg.role} agent-track-message" id="${messageId}" data-agent-id="${escAttr(track.id)}" data-message-index="${messageIndex}" data-parent-message-index="${parentIndex}">
-                    <div class="message-header">
-                        <div class="message-header-left">
-                            <span class="role-badge ${msg.role}">${msg.role}</span>
-                            <span class="message-meta">
-                                <span>${formatFullTime(msg.time_created)}</span>
-                                ${msg.modelID ? `<span>${esc(msg.modelID)}</span>` : ""}
-                                ${msg.agent ? `<span>${esc(msg.agent)}</span>` : ""}
-                            </span>
+                <div class="agent-message-group" data-agent-id="${escAttr(track.id)}" data-message-index="${messageIndex}">
+                    <div class="message ${msg.role} agent-track-message" id="${messageId}" data-agent-id="${escAttr(track.id)}" data-message-index="${messageIndex}" data-parent-message-index="${parentIndex}">
+                        <div class="message-header">
+                            <div class="message-header-left">
+                                <span class="role-badge ${msg.role}">${msg.role}</span>
+                                <span class="message-meta">
+                                    <span>${formatFullTime(msg.time_created)}</span>
+                                    ${msg.modelID ? `<span>${esc(msg.modelID)}</span>` : ""}
+                                    ${msg.agent ? `<span>${esc(msg.agent)}</span>` : ""}
+                                </span>
+                            </div>
+                            ${copyButton}
                         </div>
-                        ${copyButton}
+                        <div class="message-body">
+                            ${
+                              (msg.parts || [])
+                                .map((p, partIndex) =>
+                                  renderPart(p, {
+                                    ...toolContext,
+                                    agentId: track.id,
+                                    messageIndex,
+                                    partIndex,
+                                  }),
+                                )
+                                .join("") ||
+                              '<span style="color:var(--text-tertiary)">(no content)</span>'
+                            }
+                        </div>
                     </div>
-                    <div class="message-body">
-                        ${
-                          (msg.parts || [])
-                            .map((p, partIndex) =>
-                              renderPart(p, {
-                                subagents: track.subagents || [],
-                                parentIndex,
-                                agentId: track.id,
-                                messageIndex,
-                                partIndex,
-                                subagentPathSegments,
-                              }),
-                            )
-                            .join("") ||
-                          '<span style="color:var(--text-tertiary)">(no content)</span>'
-                        }
-                    </div>
+                    ${renderInlineToolResults(toolActivities)}
                 </div>
             `;
 }
 
 function renderAgentTrack(track, activeSearch) {
   const subagents = track.subagents || [];
+  const timelineStartMs = getTimelineStartMs();
+  let previousVisibleTimeMs = timelineStartMs;
   const visibleMessages = track.messages
-    .map((msg, index) =>
-      shouldShowMessageInTranscriptList(msg, activeSearch, subagents)
-        ? renderAgentMessage(msg, track, index)
-        : "",
-    )
+    .map((msg, index) => {
+      if (!shouldShowMessageInTranscriptList(msg, activeSearch, subagents)) {
+        return "";
+      }
+
+      const fallbackTimeMs =
+        index === 0
+          ? (getTimestampMs(track.sourceTime) ?? previousVisibleTimeMs)
+          : previousVisibleTimeMs;
+      const currentTimeMs = getTimestampMs(msg.time_created) ?? fallbackTimeMs;
+      const spacer =
+        currentTimeMs !== null && previousVisibleTimeMs !== null
+          ? renderTimelineSpacer(currentTimeMs - previousVisibleTimeMs)
+          : "";
+      previousVisibleTimeMs = currentTimeMs ?? previousVisibleTimeMs;
+
+      return spacer + renderAgentMessage(msg, track, index);
+    })
     .join("");
   const active = track.id === selectedAgentId;
   const title = getAgentTitle(track);
@@ -1662,11 +1693,9 @@ function renderTimeline() {
     .join("");
 
   timeline.innerHTML = `
-        ${renderAgentFilter("main")}
         <div class="agent-track-lanes" id="agentTrackLanes">
             ${tracksHtml}
         </div>
-        ${renderActivityStream(activeSearch)}
     `;
 
   // Apply syntax highlighting to all code blocks
