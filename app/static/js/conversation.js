@@ -20,6 +20,9 @@ let sidebarAgentFilterScrollLeft = 0;
 let isSyncingAgentScroll = false;
 let suppressMainPanelSyncUntil = 0;
 let layoutResizeListenerBound = false;
+let subagentPanelRackWidthOverride = null;
+let subagentSeparatorResizeState = null;
+const SUBAGENT_PANEL_RACK_WIDTH_KEY = "subagentPanelRackWidth";
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -815,12 +818,6 @@ function setActiveSidebarMessage(idx) {
   setActiveSidebarAgentMessage("main", idx);
 }
 
-function setActiveSidebarActivity(activityPath) {
-  document.querySelectorAll(".message-item").forEach((item) => {
-    item.classList.toggle("active", item.dataset.activityPath === activityPath);
-  });
-}
-
 function clearSidebarNavigationLock() {
   sidebarNavigationLock = null;
 }
@@ -994,7 +991,6 @@ function scrollToSubagentMessage(
 function setToolResultExpanded(activityPath, expanded) {
   const card = document.getElementById(getActivityDomId(activityPath));
   if (!card) return null;
-  const wasExpanded = expandedToolResults.has(activityPath);
 
   card.classList.toggle("expanded", expanded);
   card.setAttribute("aria-hidden", expanded ? "false" : "true");
@@ -1011,9 +1007,6 @@ function setToolResultExpanded(activityPath, expanded) {
     expandedToolResults.delete(activityPath);
   }
 
-  if (wasExpanded !== expanded && SESSION_DATA) {
-    renderSidebar();
-  }
   scheduleSubagentAlignment();
 
   return card;
@@ -1050,12 +1043,17 @@ function showToolResult(activityPath, agentId = "", messageIndex = null) {
   const el = setToolResultExpanded(activityPath, true);
   if (!el) return;
 
-  sidebarNavigationLock = { kind: "activity", activityPath };
+  const hasParentMessage = agentId && Number.isFinite(messageIndex);
+  sidebarNavigationLock = hasParentMessage
+    ? { kind: "agent-message", agentId, messageIndex }
+    : null;
   clearHighlightedTargets();
 
   scrollTranscriptElementIntoView(el);
   el.classList.add("highlighted");
-  setActiveSidebarActivity(activityPath);
+  if (hasParentMessage) {
+    setActiveSidebarAgentMessage(agentId, messageIndex);
+  }
 
   if (agentId && Number.isFinite(messageIndex)) {
     const track = getAgentTracks().find(
@@ -1402,28 +1400,12 @@ function renderSidebar() {
           previewHtml = esc(item.preview);
         }
 
-        const isTool = item.kind === "tool";
-        const itemClass = [
-          "message-item",
-          isTool ? "activity-entry tool-entry" : "",
-        ]
-          .filter(Boolean)
-          .join(" ");
-        const clickHandler = isTool
-          ? "showToolResult(this.dataset.activityPath, this.dataset.agentId, Number(this.dataset.messageIndex))"
-          : "scrollToAgentMessage(this.dataset.agentId, Number(this.dataset.messageIndex))";
-        const dataAttrs = isTool
-          ? `data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.messageIndex}" data-index="${item.parentIndex}" data-activity-path="${escAttr(item.activityPath)}" data-activity-kind="tool"`
-          : `data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.index}" data-index="${item.parentIndex}"`;
-
         return `
-                <div class="${itemClass}" ${dataAttrs} onclick="${clickHandler}">
+                <div class="message-item" data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.index}" data-index="${item.parentIndex}" onclick="scrollToAgentMessage(this.dataset.agentId, Number(this.dataset.messageIndex))">
                     <div class="message-item-header">
                         <span class="role-badge ${item.role}">${item.role}</span>
-                        ${isTool ? `<span class="activity-mini-badge tool">result</span>` : ""}
                         <span class="message-time">${formatTime(item.time)}</span>
                     </div>
-                    ${isTool ? `<div class="activity-context">${esc(item.context)}</div>` : ""}
                     <div class="message-preview">${previewHtml}</div>
                 </div>
             `;
@@ -1435,11 +1417,6 @@ function renderSidebar() {
 }
 
 function restoreSidebarActiveState() {
-  if (sidebarNavigationLock?.kind === "activity") {
-    setActiveSidebarActivity(sidebarNavigationLock.activityPath);
-    return;
-  }
-
   if (sidebarNavigationLock?.kind === "agent-message") {
     setActiveSidebarAgentMessage(
       sidebarNavigationLock.agentId,
@@ -1516,7 +1493,6 @@ function buildSidebarItems(activeSearch) {
   const track = ensureSelectedAgentTrack();
   if (!track) return items;
   const subagents = track.subagents || [];
-  const agentTitle = getAgentTitle(track);
 
   track.messages.forEach((msg, index) => {
     const showMessage = shouldShowMessageInTranscriptList(
@@ -1535,49 +1511,10 @@ function buildSidebarItems(activeSearch) {
         index,
         parentIndex: track.id === "main" ? index : track.parentIndex || 0,
       });
-
-      collectExpandedToolSidebarItems(
-        msg,
-        {
-          parentIndex: track.id === "main" ? index : track.parentIndex || 0,
-          agentId: track.id,
-          messageIndex: index,
-          subagents,
-          subagentPathSegments:
-            track.id === "main" ? [] : [...track.pathSegments, `msg${index}`],
-          context: `${agentTitle} · Message ${index + 1}`,
-        },
-        items,
-      );
     }
   });
 
   return items;
-}
-
-function collectExpandedToolSidebarItems(msg, context, items) {
-  (msg.parts || []).forEach((part, partIndex) => {
-    if (part.type !== "tool") return;
-
-    const activityPath = getToolActivityPath(part, {
-      ...context,
-      partIndex,
-    });
-    if (!expandedToolResults.has(activityPath)) return;
-
-    items.push({
-      kind: "tool",
-      agentId: context.agentId || "main",
-      role: "tool",
-      time: msg.time_created,
-      preview: getToolPreview(part, { includeResultDetails: false }),
-      text: getToolText(part),
-      parentIndex: context.parentIndex,
-      messageIndex: context.messageIndex ?? context.parentIndex,
-      activityPath,
-      context: context.context,
-    });
-  });
 }
 
 function buildMessageToolActivities(msg, context) {
@@ -2176,7 +2113,25 @@ function syncSubagentPanelsToMain() {
   }
 }
 
-function updateSubagentPanelOverlayWidth(overlay, openPanelCount) {
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function restoreSubagentPanelRackWidthOverride() {
+  if (subagentPanelRackWidthOverride !== null) return;
+  try {
+    const savedWidth = Number(
+      localStorage.getItem(SUBAGENT_PANEL_RACK_WIDTH_KEY),
+    );
+    if (Number.isFinite(savedWidth) && savedWidth > 0) {
+      subagentPanelRackWidthOverride = savedWidth;
+    }
+  } catch (error) {
+    subagentPanelRackWidthOverride = null;
+  }
+}
+
+function getSubagentPanelOverlayMetrics(overlay, openPanelCount) {
   const wrapper = overlay.closest(".main-wrapper");
   const wrapperWidth = wrapper?.clientWidth || overlay.clientWidth || 0;
   const styles = window.getComputedStyle(wrapper || overlay);
@@ -2189,32 +2144,246 @@ function updateSubagentPanelOverlayWidth(overlay, openPanelCount) {
   const mainMinWidth =
     parseFloat(styles.getPropertyValue("--main-stream-min-width")) || 420;
 
-  if (!openPanelCount || !wrapperWidth) {
+  if (!openPanelCount || !wrapperWidth) return null;
+
+  const maxAvailableWidth = Math.max(0, wrapperWidth - mainMinWidth - panelGap);
+  const targetWidth =
+    openPanelCount * panelWidth + Math.max(0, openPanelCount - 1) * panelGap;
+  const maxWidth = maxAvailableWidth;
+  const minWidth = Math.min(panelMinWidth, maxWidth);
+  const autoMaxWidth = Math.min(
+    wrapperWidth * 0.72,
+    Math.max(minWidth, maxWidth),
+  );
+  const autoWidth = Math.min(
+    maxWidth,
+    Math.max(Math.min(panelMinWidth, autoMaxWidth), targetWidth),
+  );
+
+  return {
+    wrapper,
+    wrapperWidth,
+    panelGap,
+    panelMinWidth,
+    mainMinWidth,
+    minWidth,
+    maxWidth,
+    autoWidth,
+  };
+}
+
+function updateSubagentSeparatorState(overlay, width, metrics) {
+  const separator = overlay
+    .closest(".main-wrapper")
+    ?.querySelector(".agent-stream-separator");
+  if (!separator || !metrics) return;
+
+  separator.setAttribute("aria-valuemin", String(Math.round(metrics.minWidth)));
+  separator.setAttribute("aria-valuemax", String(Math.round(metrics.maxWidth)));
+  separator.setAttribute("aria-valuenow", String(Math.round(width)));
+  separator.setAttribute(
+    "aria-valuetext",
+    `Sub-agent panels ${Math.round(width)} pixels wide`,
+  );
+}
+
+function updateSubagentPanelOverlayWidth(overlay, openPanelCount) {
+  const metrics = getSubagentPanelOverlayMetrics(overlay, openPanelCount);
+
+  if (!metrics) {
     overlay.style.setProperty("--subagent-panel-rack-width", "0px");
     return;
   }
 
-  const targetWidth =
-    openPanelCount * panelWidth + Math.max(0, openPanelCount - 1) * panelGap;
-  const maxWidth = Math.min(
-    wrapperWidth * 0.72,
-    Math.max(panelMinWidth, wrapperWidth - mainMinWidth - panelGap),
-  );
-  const nextWidth = Math.min(
-    maxWidth,
-    Math.max(Math.min(panelMinWidth, maxWidth), targetWidth),
-  );
+  const hasManualWidth = Number.isFinite(subagentPanelRackWidthOverride);
+  const nextWidth = hasManualWidth
+    ? clamp(subagentPanelRackWidthOverride, metrics.minWidth, metrics.maxWidth)
+    : metrics.autoWidth;
+  if (hasManualWidth) {
+    subagentPanelRackWidthOverride = nextWidth;
+  }
   overlay.style.setProperty(
     "--subagent-panel-rack-width",
     `${nextWidth.toFixed(1)}px`,
   );
+  updateSubagentSeparatorState(overlay, nextWidth, metrics);
+}
+
+function persistSubagentPanelRackWidthOverride() {
+  if (!Number.isFinite(subagentPanelRackWidthOverride)) return;
+  try {
+    localStorage.setItem(
+      SUBAGENT_PANEL_RACK_WIDTH_KEY,
+      String(Math.round(subagentPanelRackWidthOverride)),
+    );
+  } catch (error) {
+    // Ignore storage failures; resizing should still work for the current page.
+  }
+}
+
+function setSubagentPanelRackWidthOverride(width, options = {}) {
+  const overlay = document.getElementById("subagentPanelOverlay");
+  if (!overlay) return null;
+
+  const openPanelCount = Number(overlay.dataset.openPanelCount || 0);
+  const metrics = getSubagentPanelOverlayMetrics(overlay, openPanelCount);
+  if (!metrics) return null;
+
+  const nextWidth = clamp(width, metrics.minWidth, metrics.maxWidth);
+  subagentPanelRackWidthOverride = nextWidth;
+  updateSubagentPanelOverlayWidth(overlay, openPanelCount);
+
+  if (options.persist) {
+    persistSubagentPanelRackWidthOverride();
+  }
+
+  scheduleSubagentAlignment();
+  return nextWidth;
+}
+
+function startSubagentSeparatorResize(event) {
+  if (event.button !== undefined && event.button !== 0) return;
+
+  const overlay = document.getElementById("subagentPanelOverlay");
+  const openPanelCount = Number(overlay?.dataset.openPanelCount || 0);
+  const metrics = overlay
+    ? getSubagentPanelOverlayMetrics(overlay, openPanelCount)
+    : null;
+  if (!overlay || !metrics) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const separator = event.currentTarget;
+  subagentSeparatorResizeState = {
+    pointerId: event.pointerId,
+    moveEventName: event.type === "mousedown" ? "mousemove" : "pointermove",
+    endEventName: event.type === "mousedown" ? "mouseup" : "pointerup",
+    cancelEventName:
+      event.type === "mousedown" ? "mouseleave" : "pointercancel",
+    startX: event.clientX,
+    startWidth: overlay.getBoundingClientRect().width,
+    separator,
+  };
+
+  separator.classList.add("dragging");
+  separator.setAttribute("aria-grabbed", "true");
+  if (event.pointerId !== undefined) {
+    separator.setPointerCapture?.(event.pointerId);
+  }
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+
+  document.addEventListener(
+    subagentSeparatorResizeState.moveEventName,
+    handleSubagentSeparatorResizeMove,
+    { passive: false },
+  );
+  document.addEventListener(
+    subagentSeparatorResizeState.endEventName,
+    finishSubagentSeparatorResize,
+  );
+  document.addEventListener(
+    subagentSeparatorResizeState.cancelEventName,
+    finishSubagentSeparatorResize,
+  );
+}
+
+function handleSubagentSeparatorResizeMove(event) {
+  if (!subagentSeparatorResizeState) return;
+  event.preventDefault();
+
+  const deltaX = event.clientX - subagentSeparatorResizeState.startX;
+  setSubagentPanelRackWidthOverride(
+    subagentSeparatorResizeState.startWidth - deltaX,
+    { persist: false },
+  );
+}
+
+function finishSubagentSeparatorResize(event = null) {
+  if (!subagentSeparatorResizeState) return;
+
+  const { separator, pointerId, moveEventName, endEventName, cancelEventName } =
+    subagentSeparatorResizeState;
+  if (event?.clientX !== undefined) {
+    const deltaX = event.clientX - subagentSeparatorResizeState.startX;
+    setSubagentPanelRackWidthOverride(
+      subagentSeparatorResizeState.startWidth - deltaX,
+      { persist: false },
+    );
+  }
+
+  persistSubagentPanelRackWidthOverride();
+  separator?.classList.remove("dragging");
+  separator?.removeAttribute("aria-grabbed");
+  if (pointerId !== undefined) {
+    separator?.releasePointerCapture?.(pointerId);
+  }
+  document.body.style.cursor = "";
+  document.body.style.userSelect = "";
+  document.removeEventListener(
+    moveEventName,
+    handleSubagentSeparatorResizeMove,
+  );
+  document.removeEventListener(endEventName, finishSubagentSeparatorResize);
+  document.removeEventListener(cancelEventName, finishSubagentSeparatorResize);
+  subagentSeparatorResizeState = null;
+}
+
+function handleSubagentSeparatorKeydown(event) {
+  const overlay = document.getElementById("subagentPanelOverlay");
+  const openPanelCount = Number(overlay?.dataset.openPanelCount || 0);
+  const metrics = overlay
+    ? getSubagentPanelOverlayMetrics(overlay, openPanelCount)
+    : null;
+  if (!overlay || !metrics) return;
+
+  const currentWidth = overlay.getBoundingClientRect().width;
+  const step = event.shiftKey ? 80 : 24;
+  let nextWidth = null;
+
+  if (event.key === "ArrowLeft") {
+    nextWidth = currentWidth + step;
+  } else if (event.key === "ArrowRight") {
+    nextWidth = currentWidth - step;
+  } else if (event.key === "Home") {
+    nextWidth = metrics.maxWidth;
+  } else if (event.key === "End") {
+    nextWidth = metrics.minWidth;
+  }
+
+  if (nextWidth === null) return;
+  event.preventDefault();
+  event.stopPropagation();
+  setSubagentPanelRackWidthOverride(nextWidth, { persist: true });
+}
+
+function bindSubagentSeparatorResize() {
+  const separator = document.getElementById("agentStreamSeparator");
+  if (!separator || separator.dataset.resizeBound === "true") return;
+
+  separator.dataset.resizeBound = "true";
+  separator.addEventListener("keydown", handleSubagentSeparatorKeydown);
+  if (window.PointerEvent) {
+    separator.addEventListener("pointerdown", startSubagentSeparatorResize, {
+      passive: false,
+    });
+  } else {
+    separator.addEventListener("mousedown", startSubagentSeparatorResize, {
+      passive: false,
+    });
+  }
 }
 
 function renderFloatingSubagentPanels(openSubagentTracks, activeSearch) {
   const overlay = document.getElementById("subagentPanelOverlay");
   if (!overlay) return;
+  const wrapper = overlay.closest(".main-wrapper");
 
   overlay.dataset.openPanelCount = String(openSubagentTracks.length);
+  if (wrapper) {
+    wrapper.dataset.openPanelCount = String(openSubagentTracks.length);
+  }
   overlay.style.setProperty("--open-panel-count", openSubagentTracks.length);
   updateSubagentPanelOverlayWidth(overlay, openSubagentTracks.length);
   if (!openSubagentTracks.length) {
@@ -2226,7 +2395,6 @@ function renderFloatingSubagentPanels(openSubagentTracks, activeSearch) {
     .map((track) => renderAgentTrack(track, activeSearch, { variant: "panel" }))
     .join("");
   overlay.innerHTML = `
-        <div class="agent-stream-separator" role="separator" aria-orientation="vertical" aria-label="Main agent and sub-agent panels split"></div>
         <div class="subagent-panel-rack" id="subagentPanelRack" aria-label="Open subagent panels">
             ${panelsHtml}
         </div>
@@ -2319,6 +2487,7 @@ function updateStats() {
 // Load data
 function loadData(data) {
   SESSION_DATA = data;
+  bindSubagentSeparatorResize();
 
   // Initialize URL search query (passed in from dashboard search)
   urlSearchQuery = getUrlSearchQuery();
@@ -2467,6 +2636,8 @@ async function toggleArchive() {
 function initConversation() {
   // Initialize sidebar resize
   initSidebarResize();
+  restoreSubagentPanelRackWidthOverride();
+  bindSubagentSeparatorResize();
 
   // Initialize viz panel state
   initVizPanel();

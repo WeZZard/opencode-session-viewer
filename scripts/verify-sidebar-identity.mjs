@@ -50,6 +50,15 @@ function harnessHtml() {
           <div id="messageList"></div>
           <div class="main-wrapper">
             <div id="mainContent"><div id="timeline"></div></div>
+            <div
+              id="agentStreamSeparator"
+              class="agent-stream-separator"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize main agent and sub-agent panels"
+              tabindex="0"
+              title="Drag to resize main and sub-agent panels"
+            ></div>
             <div id="subagentPanelOverlay" class="subagent-floating-panels"></div>
           </div>
           <div id="vizPanel"><button id="vizPanelToggle"></button></div>
@@ -292,14 +301,27 @@ async function readIdentityState(page, selector) {
           const separator = document.querySelector(".agent-stream-separator");
           if (!separator) return { exists: false };
           const styles = window.getComputedStyle(separator);
+          const rect = separator.getBoundingClientRect();
+          const hitTarget = document.elementFromPoint(
+            rect.left + rect.width / 2,
+            rect.top + rect.height / 2,
+          );
           return {
             exists: true,
             rect: rectOf(separator),
+            hitTargetTag: hitTarget?.tagName || null,
+            hitTargetId: hitTarget?.id || null,
+            hitTargetClass: hitTarget?.className || null,
             role: separator.getAttribute("role"),
             ariaOrientation: separator.getAttribute("aria-orientation"),
             ariaLabel: separator.getAttribute("aria-label"),
+            ariaValueMin: separator.getAttribute("aria-valuemin"),
+            ariaValueMax: separator.getAttribute("aria-valuemax"),
+            ariaValueNow: separator.getAttribute("aria-valuenow"),
+            tabIndex: separator.tabIndex,
             display: styles.display,
             pointerEvents: styles.pointerEvents,
+            cursor: styles.cursor,
             backgroundImage: styles.backgroundImage,
             backgroundSize: styles.backgroundSize,
           };
@@ -675,20 +697,47 @@ async function verifyAgentStreamPresentation(browser) {
       separator.role === "separator" &&
       separator.ariaOrientation === "vertical" &&
       separator.ariaLabel &&
+      separator.tabIndex === 0 &&
       separator.display !== "none" &&
-      separator.pointerEvents === "none" &&
-      rect.height > 100 &&
+      separator.pointerEvents === "auto" &&
+      separator.cursor === "col-resize" &&
+      Number(separator.ariaValueMin) > 0 &&
+      Number(separator.ariaValueMax) >= Number(separator.ariaValueMin) &&
+      Math.abs(Number(separator.ariaValueNow) - overlayRect.width) <= 1 &&
+      rect.height >= overlayRect.height - 1 &&
+      Math.abs(rect.top - overlayRect.top) <= 1 &&
+      Math.abs(rect.bottom - overlayRect.bottom) <= 1 &&
       rect.left >= mainRect.right - 1 &&
       rect.right <= overlayRect.left + 1 &&
       rect.right > mainRect.right &&
       separator.backgroundImage !== "none" &&
-      separator.backgroundSize.includes("2px")
+      /\b[23]px 100%/.test(separator.backgroundSize)
     );
+  };
+  const separatorResizeSnapshot = (state) => ({
+    overlayWidth: state.workspace.overlayRect?.width ?? null,
+    mainContentWidth: state.workspace.mainContentRect?.width ?? null,
+    rackClientWidth: state.workspace.rackClientWidth,
+    rackScrollWidth: state.workspace.rackScrollWidth,
+    separator: state.workspace.separator,
+  });
+  const dragSeparatorBy = async (deltaX) => {
+    const separator = page.locator(".agent-stream-separator");
+    const box = await separator.boundingBox();
+    assert(Boolean(box), "separator handle was not available for dragging");
+
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + deltaX, y, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
   };
   assert(
     initialState.workspace.mainStreamCount === 1 &&
       initialState.workspace.subagentPanelCount === 0 &&
-      !initialState.workspace.separator.exists &&
+      initialState.workspace.separator.display === "none" &&
       nearlyEqual(
         rectCenter(initialState.workspace.mainRect),
         rectCenter(initialState.workspace.mainContentRect),
@@ -875,6 +924,42 @@ async function verifyAgentStreamPresentation(browser) {
       ),
     "long subagent panel titles should wrap without horizontal title overflow",
     manyPanelsState,
+  );
+
+  await dragSeparatorBy(96);
+  const afterSeparatorDragRight = await readIdentityState(
+    page,
+    ".message-item",
+  );
+  assert(
+    separatorShowsSplit(afterSeparatorDragRight) &&
+      afterSeparatorDragRight.workspace.overlayRect.width <
+        manyPanelsState.workspace.overlayRect.width - 40 &&
+      afterSeparatorDragRight.workspace.mainContentRect.width >
+        manyPanelsState.workspace.mainContentRect.width + 40 &&
+      afterSeparatorDragRight.workspace.rackScrollWidth >
+        afterSeparatorDragRight.workspace.rackClientWidth,
+    "dragging the separator right should expand main content and shrink subagent panel space",
+    {
+      before: separatorResizeSnapshot(manyPanelsState),
+      after: separatorResizeSnapshot(afterSeparatorDragRight),
+    },
+  );
+
+  await page.locator(".agent-stream-separator").press("ArrowLeft");
+  await page.waitForTimeout(100);
+  const afterSeparatorKeyboardLeft = await readIdentityState(
+    page,
+    ".message-item",
+  );
+  assert(
+    separatorShowsSplit(afterSeparatorKeyboardLeft) &&
+      afterSeparatorKeyboardLeft.workspace.overlayRect.width >
+        afterSeparatorDragRight.workspace.overlayRect.width + 10 &&
+      afterSeparatorKeyboardLeft.workspace.mainContentRect.width <
+        afterSeparatorDragRight.workspace.mainContentRect.width - 10,
+    "keyboard resizing the separator left should give subagent panels more space",
+    { afterSeparatorDragRight, afterSeparatorKeyboardLeft },
   );
 
   await page.evaluate(() => {
@@ -1394,9 +1479,6 @@ async function verifyToolBodyIds(browser) {
   const visibleFromMessage = expandedFromMessage.toolActivities.filter(
     (activity) => activity.visible,
   );
-  const toolRowsAfterFirstInsert = expandedFromMessage.rows.filter(
-    (row) => row.activityPath,
-  );
   assert(
     visibleFromMessage.length === 1 &&
       visibleFromMessage[0].text.includes("one") &&
@@ -1405,12 +1487,11 @@ async function verifyToolBodyIds(browser) {
     expandedFromMessage,
   );
   assert(
-    toolRowsAfterFirstInsert.length === 1 &&
-      toolRowsAfterFirstInsert[0].activityPath === "msg0__tool0-bash" &&
-      !toolRowsAfterFirstInsert[0].text.includes("one") &&
+    expandedFromMessage.rows.every((row) => !row.activityPath) &&
       expandedFromMessage.activeRows.length === 1 &&
-      expandedFromMessage.activeRows[0].activityPath === "msg0__tool0-bash",
-    "expanding one inline tool result should inject and activate one compact left navigation row",
+      expandedFromMessage.activeRows[0].agentId === "main" &&
+      expandedFromMessage.activeRows[0].messageIndex === "0",
+    "expanding one inline tool result should keep the left navigation on the parent message",
     expandedFromMessage,
   );
 
@@ -1420,23 +1501,12 @@ async function verifyToolBodyIds(browser) {
     page,
     ".message-item",
   );
-  const toolRowsAfterSecondInsert = expandedFromSecondMessage.rows.filter(
-    (row) => row.activityPath,
-  );
   assert(
-    toolRowsAfterSecondInsert.length === 2 &&
-      toolRowsAfterSecondInsert.some(
-        (row) =>
-          row.activityPath === "msg0__tool0-bash" && !row.text.includes("one"),
-      ) &&
-      toolRowsAfterSecondInsert.some(
-        (row) =>
-          row.activityPath === "msg0__tool1-bash" && !row.text.includes("two"),
-      ) &&
+    expandedFromSecondMessage.rows.every((row) => !row.activityPath) &&
       expandedFromSecondMessage.activeRows.length === 1 &&
-      expandedFromSecondMessage.activeRows[0].activityPath ===
-        "msg0__tool1-bash",
-    "expanding a second inline tool result should inject both compact left navigation rows",
+      expandedFromSecondMessage.activeRows[0].agentId === "main" &&
+      expandedFromSecondMessage.activeRows[0].messageIndex === "0",
+    "expanding a second inline tool result should not inject left navigation rows",
     expandedFromSecondMessage,
   );
 
@@ -1455,34 +1525,18 @@ async function verifyToolBodyIds(browser) {
     "inline tool result buttons did not reveal both tool results",
     expandedFromSecondMessage,
   );
-  await page
-    .locator('.message-item.tool-entry[data-activity-path="msg0__tool1-bash"]')
-    .click();
-  await page.waitForTimeout(100);
-  const expandedFromSidebar = await readIdentityState(page, ".message-item");
-  assert(
-    expandedFromSidebar.activeRows.length === 1 &&
-      expandedFromSidebar.activeRows[0].activityPath === "msg0__tool1-bash" &&
-      expandedFromSidebar.toolActivities.filter((activity) => activity.visible)
-        .length === 2,
-    "sidebar tool result row did not keep the inline card visible and active",
-    expandedFromSidebar,
-  );
   await page.locator('[data-tool-result-button="msg0__tool1-bash"]').click();
   await page.waitForTimeout(100);
   const collapsedSecondResult = await readIdentityState(page, ".message-item");
   assert(
-    collapsedSecondResult.rows.filter((row) => row.activityPath).length === 1 &&
-      collapsedSecondResult.rows.some(
-        (row) => row.activityPath === "msg0__tool0-bash",
-      ) &&
-      !collapsedSecondResult.rows.some(
-        (row) => row.activityPath === "msg0__tool1-bash",
-      ) &&
+    collapsedSecondResult.rows.every((row) => !row.activityPath) &&
+      collapsedSecondResult.activeRows.length === 1 &&
+      collapsedSecondResult.activeRows[0].agentId === "main" &&
+      collapsedSecondResult.activeRows[0].messageIndex === "0" &&
       collapsedSecondResult.toolActivities.filter(
         (activity) => activity.visible,
       ).length === 1,
-    "collapsing an inline tool result should remove its left navigation row",
+    "collapsing an inline tool result should leave the left navigation on the parent message",
     collapsedSecondResult,
   );
   await page.close();
