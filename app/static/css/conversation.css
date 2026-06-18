@@ -425,6 +425,7 @@ body {
   --agent-stream-panel-gap: 16px;
   --agent-stream-separator-width: 16px;
   --agent-stream-separator-half-width: 8px;
+  --agent-stream-divider-line-width: 6px;
   --open-panel-count: 0;
 }
 
@@ -522,7 +523,7 @@ body {
   cursor: col-resize;
   pointer-events: auto;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
   background: transparent;
 }
@@ -544,22 +545,26 @@ body {
 
 .agent-stream-separator:focus-visible::after,
 .agent-stream-separator.dragging::after {
-  border-color: var(--accent-blue);
-  background-color: var(--bg-secondary);
+  background-color: rgba(96, 96, 96, 0.72);
 }
 
 .agent-stream-separator::after {
   content: "";
-  width: 8px;
-  height: 44px;
-  border: 1px solid var(--border-color, rgba(120, 119, 116, 0.32));
-  border-radius: 999px;
-  background-color: var(--bg-primary, #fff);
-  box-shadow: 7px 0 14px rgba(0, 0, 0, 0.14);
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: var(--agent-stream-divider-line-width);
+  transform: translateX(-50%);
+  background-color: rgba(120, 119, 116, 0.58);
+  box-shadow: 8px 0 16px rgba(0, 0, 0, 0.18);
+  clip-path: inset(0 -24px 0 0);
+  pointer-events: none;
 }
 
 .dark .agent-stream-separator::after {
-  box-shadow: 8px 0 16px rgba(0, 0, 0, 0.34);
+  background-color: rgba(160, 160, 160, 0.5);
+  box-shadow: 9px 0 18px rgba(0, 0, 0, 0.36);
 }
 
 .subagent-panel-rack {

@@ -327,7 +327,10 @@ async function readIdentityState(page, selector) {
           const separator = document.querySelector(".agent-stream-separator");
           if (!separator) return { exists: false };
           const styles = window.getComputedStyle(separator);
-          const capsuleStyles = window.getComputedStyle(separator, "::after");
+          const dividerLineStyles = window.getComputedStyle(
+            separator,
+            "::after",
+          );
           const rect = separator.getBoundingClientRect();
           const hitTarget = document.elementFromPoint(
             rect.left + rect.width / 2,
@@ -354,14 +357,19 @@ async function readIdentityState(page, selector) {
             backgroundImage: styles.backgroundImage,
             backgroundSize: styles.backgroundSize,
             boxShadow: styles.boxShadow,
-            capsuleWidth: capsuleStyles.width,
-            capsuleHeight: capsuleStyles.height,
-            capsuleBorderTopWidth: capsuleStyles.borderTopWidth,
-            capsuleBorderRightWidth: capsuleStyles.borderRightWidth,
-            capsuleBorderBottomWidth: capsuleStyles.borderBottomWidth,
-            capsuleBorderLeftWidth: capsuleStyles.borderLeftWidth,
-            capsuleBorderRadius: capsuleStyles.borderRadius,
-            capsuleBoxShadow: capsuleStyles.boxShadow,
+            dividerLinePosition: dividerLineStyles.position,
+            dividerLineTop: dividerLineStyles.top,
+            dividerLineBottom: dividerLineStyles.bottom,
+            dividerLineWidth: dividerLineStyles.width,
+            dividerLineHeight: dividerLineStyles.height,
+            dividerLineBorderTopWidth: dividerLineStyles.borderTopWidth,
+            dividerLineBorderRightWidth: dividerLineStyles.borderRightWidth,
+            dividerLineBorderBottomWidth: dividerLineStyles.borderBottomWidth,
+            dividerLineBorderLeftWidth: dividerLineStyles.borderLeftWidth,
+            dividerLineBorderRadius: dividerLineStyles.borderRadius,
+            dividerLineBackgroundColor: dividerLineStyles.backgroundColor,
+            dividerLineBoxShadow: dividerLineStyles.boxShadow,
+            dividerLineClipPath: dividerLineStyles.clipPath,
           };
         })(),
       },
@@ -740,7 +748,20 @@ async function verifyAgentStreamPresentation(browser) {
     const mainRect = state.workspace.mainContentRect;
     const overlayRect = state.workspace.overlayRect;
     const splitBoundary = overlayRect.left;
-    const shadowOffsetPattern = /\b[78]px 0px (1[46])px/;
+    const lineWidth = Number.parseFloat(separator.dividerLineWidth || "0");
+    const lineColorChannels =
+      separator.dividerLineBackgroundColor
+        ?.match(/rgba?\(([^)]+)\)/)?.[1]
+        ?.split(",")
+        .map((channel) => Number.parseFloat(channel.trim())) || [];
+    const lineColorSpread =
+      lineColorChannels.length >= 3
+        ? Math.max(...lineColorChannels.slice(0, 3)) -
+          Math.min(...lineColorChannels.slice(0, 3))
+        : Number.POSITIVE_INFINITY;
+    const lineOpacity =
+      lineColorChannels.length >= 4 ? lineColorChannels[3] : 1;
+    const rightShadowPattern = /\b[89]px 0px (1[68])px/;
 
     return (
       separator.exists &&
@@ -769,14 +790,19 @@ async function verifyAgentStreamPresentation(browser) {
       nearlyEqual(rectCenter(rect), splitBoundary, 1) &&
       separator.backgroundImage === "none" &&
       separator.boxShadow === "none" &&
-      separator.capsuleWidth === "8px" &&
-      separator.capsuleHeight === "44px" &&
-      separator.capsuleBorderTopWidth === "1px" &&
-      separator.capsuleBorderRightWidth === "1px" &&
-      separator.capsuleBorderBottomWidth === "1px" &&
-      separator.capsuleBorderLeftWidth === "1px" &&
-      separator.capsuleBorderRadius !== "0px" &&
-      shadowOffsetPattern.test(separator.capsuleBoxShadow)
+      separator.dividerLinePosition === "absolute" &&
+      separator.dividerLineTop === "0px" &&
+      separator.dividerLineBottom === "0px" &&
+      lineWidth >= 6 &&
+      separator.dividerLineBorderTopWidth === "0px" &&
+      separator.dividerLineBorderRightWidth === "0px" &&
+      separator.dividerLineBorderBottomWidth === "0px" &&
+      separator.dividerLineBorderLeftWidth === "0px" &&
+      separator.dividerLineBorderRadius === "0px" &&
+      lineColorSpread <= 8 &&
+      lineOpacity > 0.4 &&
+      rightShadowPattern.test(separator.dividerLineBoxShadow) &&
+      separator.dividerLineClipPath !== "none"
     );
   };
   const separatorResizeSnapshot = (state) => ({
