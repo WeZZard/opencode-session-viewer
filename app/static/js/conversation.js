@@ -4,7 +4,7 @@
 let SESSION_DATA = null;
 let currentFilter = "all";
 let filterQuery = "";
-let showThinkingSteps = false;
+let hideIntermediateSteps = true;
 let highlightedId = null;
 let tokenData = [];
 let maxTokens = { input: 1, output: 1, cache: 1 };
@@ -579,12 +579,12 @@ function getToolPreview(part) {
   return compactText(`Tool (${toolName})${detail ? `: ${detail}` : ""}`);
 }
 
-// Determine if a message is a "thinking step" (agentic tool-calling loop message)
+// Determine if a message is an intermediate assistant step.
 // vs a final/substantive assistant response.
-// A thinking step is an assistant message that either:
+// An intermediate step is an assistant message that either:
 //   - has finish == "tool-calls" (stopped to invoke tools), or
 //   - has no "text" parts and no finish=="stop" (pure step-start/step-finish/tool sequences)
-function isThinkingStep(msg) {
+function isIntermediateStep(msg) {
   if (msg.role !== "assistant") return false;
   if (msg.finish === "stop") return false;
   const hasText = (msg.parts || []).some(
@@ -1465,8 +1465,8 @@ function shouldShowMessageInTranscriptList(msg, activeSearch, subagents) {
   if (currentFilter !== "all" && msg.role !== currentFilter) return false;
 
   if (
-    !showThinkingSteps &&
-    isThinkingStep(msg) &&
+    hideIntermediateSteps &&
+    isIntermediateStep(msg) &&
     !hasSubagent &&
     !matchesSearch
   ) {
@@ -2474,11 +2474,11 @@ function initConversation() {
     renderTimeline();
   });
 
-  // Set up thinking steps toggle
+  // Set up intermediate assistant-step visibility toggle
   document
-    .getElementById("showThinkingSteps")
+    .getElementById("hideIntermediateSteps")
     .addEventListener("change", (e) => {
-      showThinkingSteps = e.target.checked;
+      hideIntermediateSteps = e.target.checked;
       renderSidebar();
       renderTimeline();
     });

@@ -59,7 +59,7 @@ function harnessHtml() {
         <button class="filter-btn" data-filter="user"></button>
         <button class="filter-btn" data-filter="assistant"></button>
         <input id="filterBox" />
-        <input id="showThinkingSteps" type="checkbox" />
+        <input id="hideIntermediateSteps" type="checkbox" checked />
         <button id="filterClear"></button>
         <div id="filterLabel"></div>
         <div id="inputBar"></div>
@@ -88,7 +88,7 @@ async function setupPage(browser) {
 
 async function runSyntheticSession(page, data) {
   return page.evaluate(async (sessionData) => {
-    showThinkingSteps = true;
+    hideIntermediateSteps = false;
     currentFilter = "all";
     filterQuery = "";
     urlSearchQuery = "";
