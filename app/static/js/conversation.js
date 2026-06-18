@@ -13,9 +13,11 @@ let urlSearchQuery = ""; // Search query from URL (for highlighting)
 let sidebarNavigationLock = null;
 let selectedAgentId = "main";
 const expandedToolResults = new Set();
-const TIMELINE_PIXELS_PER_MINUTE = 18;
+const TIMELINE_PIXELS_PER_MINUTE = 14;
+const TIMELINE_LINEAR_MINUTES = 4;
+const TIMELINE_LOG_PIXELS = 8;
 const TIMELINE_MIN_SPACER_PX = 8;
-const TIMELINE_MAX_SPACER_PX = 420;
+const TIMELINE_MAX_SPACER_PX = 96;
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -203,9 +205,15 @@ function getTimelineStartMs() {
 function getTimelineSpacerPx(deltaMs) {
   if (!deltaMs || deltaMs <= 0) return 0;
   const minutes = deltaMs / 60000;
+  const linearPixels =
+    Math.min(minutes, TIMELINE_LINEAR_MINUTES) * TIMELINE_PIXELS_PER_MINUTE;
+  const compressedPixels =
+    minutes > TIMELINE_LINEAR_MINUTES
+      ? Math.log1p(minutes - TIMELINE_LINEAR_MINUTES) * TIMELINE_LOG_PIXELS
+      : 0;
   return Math.min(
     TIMELINE_MAX_SPACER_PX,
-    Math.max(TIMELINE_MIN_SPACER_PX, minutes * TIMELINE_PIXELS_PER_MINUTE),
+    Math.max(TIMELINE_MIN_SPACER_PX, linearPixels + compressedPixels),
   );
 }
 

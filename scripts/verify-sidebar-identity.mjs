@@ -414,6 +414,11 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     "top-level tracks did not include timestamp-based spacers",
     state,
   );
+  assert(
+    state.timelineSpacers.every((spacer) => spacer.height <= 96),
+    "top-level timeline spacers should be visually capped",
+    state,
+  );
   await page.close();
   return state;
 }
@@ -572,6 +577,11 @@ async function verifyRepeatedNestedTranscript(browser) {
   assert(
     state.timelineSpacers.some((spacer) => spacer.minutes >= 1),
     "nested tracks did not include timestamp-based spacers",
+    state,
+  );
+  assert(
+    state.timelineSpacers.every((spacer) => spacer.height <= 96),
+    "nested timeline spacers should be visually capped",
     state,
   );
   await page.close();
