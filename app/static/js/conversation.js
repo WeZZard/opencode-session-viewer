@@ -1388,28 +1388,12 @@ function renderSidebar() {
           previewHtml = esc(item.preview);
         }
 
-        const isTool = item.kind === "tool";
-        const itemClass = [
-          "message-item",
-          isTool ? "activity-entry tool-entry" : "",
-        ]
-          .filter(Boolean)
-          .join(" ");
-        const clickHandler = isTool
-          ? "showToolResult(this.dataset.activityPath, this.dataset.agentId, Number(this.dataset.messageIndex))"
-          : "scrollToAgentMessage(this.dataset.agentId, Number(this.dataset.messageIndex))";
-        const dataAttrs = isTool
-          ? `data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.messageIndex}" data-index="${item.parentIndex}" data-activity-path="${escAttr(item.activityPath)}" data-activity-kind="tool"`
-          : `data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.index}" data-index="${item.parentIndex}"`;
-
         return `
-                <div class="${itemClass}" ${dataAttrs} onclick="${clickHandler}">
+                <div class="message-item" data-agent-id="${escAttr(item.agentId)}" data-message-index="${item.index}" data-index="${item.parentIndex}" onclick="scrollToAgentMessage(this.dataset.agentId, Number(this.dataset.messageIndex))">
                     <div class="message-item-header">
                         <span class="role-badge ${item.role}">${item.role}</span>
-                        ${isTool ? `<span class="activity-mini-badge tool">tool</span>` : ""}
                         <span class="message-time">${formatTime(item.time)}</span>
                     </div>
-                    ${isTool ? `<div class="activity-context">${esc(item.context)}</div>` : ""}
                     <div class="message-preview">${previewHtml}</div>
                 </div>
             `;
@@ -1487,7 +1471,6 @@ function buildSidebarItems(activeSearch) {
   const track = ensureSelectedAgentTrack();
   if (!track) return items;
   const subagents = track.subagents || [];
-  const agentTitle = getAgentTitle(track);
 
   track.messages.forEach((msg, index) => {
     const showMessage = shouldShowMessageInTranscriptList(
@@ -1506,57 +1489,10 @@ function buildSidebarItems(activeSearch) {
         index,
         parentIndex: track.id === "main" ? index : track.parentIndex || 0,
       });
-
-      collectToolSidebarItems(
-        msg,
-        {
-          parentIndex: track.id === "main" ? index : track.parentIndex || 0,
-          agentId: track.id,
-          messageIndex: index,
-          subagents,
-          subagentPathSegments:
-            track.id === "main" ? [] : [...track.pathSegments, `msg${index}`],
-          context: `${agentTitle} · Message ${index + 1}`,
-        },
-        activeSearch,
-        items,
-      );
     }
   });
 
   return items;
-}
-
-function collectToolSidebarItems(msg, context, activeSearch, items) {
-  (msg.parts || []).forEach((part, partIndex) => {
-    if (part.type !== "tool") return;
-
-    const activityPath = getToolActivityPath(part, {
-      ...context,
-      partIndex,
-    });
-
-    const text = getToolText(part);
-    if (
-      activeSearch &&
-      !text.toLowerCase().includes(activeSearch.toLowerCase())
-    ) {
-      return;
-    }
-
-    items.push({
-      kind: "tool",
-      agentId: context.agentId || "main",
-      role: "tool",
-      time: msg.time_created,
-      preview: getToolPreview(part),
-      text,
-      parentIndex: context.parentIndex,
-      messageIndex: context.messageIndex ?? context.parentIndex,
-      activityPath,
-      context: context.context,
-    });
-  });
 }
 
 function buildMessageToolActivities(msg, context) {

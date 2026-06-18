@@ -1332,10 +1332,8 @@ async function verifyToolBodyIds(browser) {
     state,
   );
   assert(
-    state.rows.filter((row) => row.activityPath).length === 2 &&
-      state.rows.some((row) => row.activityPath === "msg0__tool0-bash") &&
-      state.rows.some((row) => row.activityPath === "msg0__tool1-bash"),
-    "collapsed tool outputs should appear in the transcript list before inline expansion",
+    state.rows.every((row) => !row.activityPath),
+    "collapsed tool outputs should not appear as left navigation rows",
     state,
   );
 
@@ -1356,14 +1354,8 @@ async function verifyToolBodyIds(browser) {
     expandedFromMessage,
   );
   assert(
-    toolRowsAfterFirstInsert.length === 2 &&
-      toolRowsAfterFirstInsert.some(
-        (row) => row.activityPath === "msg0__tool0-bash",
-      ) &&
-      toolRowsAfterFirstInsert.some(
-        (row) => row.activityPath === "msg0__tool1-bash",
-      ),
-    "expanding one inline tool result should keep all tool outputs in the transcript list",
+    toolRowsAfterFirstInsert.length === 0,
+    "expanding one inline tool result should not add left navigation tool rows",
     expandedFromMessage,
   );
 
@@ -1377,35 +1369,28 @@ async function verifyToolBodyIds(browser) {
     (row) => row.activityPath,
   );
   assert(
-    toolRowsAfterSecondInsert.length === 2 &&
-      toolRowsAfterSecondInsert.some(
-        (row) => row.activityPath === "msg0__tool0-bash",
-      ) &&
-      toolRowsAfterSecondInsert.some(
-        (row) => row.activityPath === "msg0__tool1-bash",
-      ),
-    "expanding the second inline tool result should keep both tool outputs in the transcript list",
+    toolRowsAfterSecondInsert.length === 0,
+    "expanding the second inline tool result should not add left navigation tool rows",
     expandedFromSecondMessage,
   );
 
-  await page
-    .locator('.message-item.tool-entry[data-activity-path="msg0__tool1-bash"]')
-    .click();
-  await page.waitForTimeout(100);
-  const expandedFromSidebar = await readIdentityState(page, ".message-item");
-  const visibleFromSidebar = expandedFromSidebar.toolActivities.filter(
-    (activity) => activity.visible,
-  );
+  const visibleAfterSecondInsert =
+    expandedFromSecondMessage.toolActivities.filter(
+      (activity) => activity.visible,
+    );
   assert(
-    visibleFromSidebar.length === 2 &&
-      visibleFromSidebar.some((activity) => activity.text.includes("two")) &&
-      expandedFromSidebar.activeRows.length === 1 &&
-      expandedFromSidebar.activeRows[0].activityPath === "msg0__tool1-bash",
-    "sidebar tool row did not reveal and activate the inline result",
-    expandedFromSidebar,
+    visibleAfterSecondInsert.length === 2 &&
+      visibleAfterSecondInsert.some((activity) =>
+        activity.text.includes("one"),
+      ) &&
+      visibleAfterSecondInsert.some((activity) =>
+        activity.text.includes("two"),
+      ),
+    "inline tool result buttons did not reveal both tool results",
+    expandedFromSecondMessage,
   );
   await page.close();
-  return expandedFromSidebar;
+  return expandedFromSecondMessage;
 }
 
 async function verifyConnectorAlignmentAfterExpansion(browser) {
