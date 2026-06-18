@@ -96,6 +96,11 @@ function duplicateIdsFrom(ids) {
   );
 }
 
+function hasUniformSpacerScale(spacer) {
+  const expectedHeight = Math.max(8, spacer.minutes * 14);
+  return Math.abs(spacer.height - expectedHeight) < 0.2;
+}
+
 async function readIdentityState(page, selector) {
   return page.evaluate((rowSelector) => {
     const ids = Array.from(document.querySelectorAll("[id]")).map(
@@ -187,6 +192,17 @@ async function readIdentityState(page, selector) {
         minutes: Number(el.dataset.offsetMinutes || 0),
         text: el.textContent.replace(/\s+/g, " ").trim(),
         height: Number.parseFloat(el.style.height || "0"),
+        trackKind: el.closest(".agent-track")?.dataset.trackKind || null,
+        trackId: el.closest(".agent-track")?.dataset.agentId || null,
+      })),
+      timelineIdleBreaks: Array.from(
+        document.querySelectorAll(".timeline-idle-break"),
+      ).map((el) => ({
+        minutes: Number(el.dataset.idleMinutes || 0),
+        text: el.textContent.replace(/\s+/g, " ").trim(),
+        height: Number.parseFloat(el.style.height || "0"),
+        trackKind: el.closest(".agent-track")?.dataset.trackKind || null,
+        trackId: el.closest(".agent-track")?.dataset.agentId || null,
       })),
       toolBodyIds: Array.from(document.querySelectorAll(".tool-body")).map(
         (el) => el.id,
@@ -415,8 +431,13 @@ async function verifyRepeatedTopLevelTranscript(browser) {
     state,
   );
   assert(
-    state.timelineSpacers.every((spacer) => spacer.height <= 96),
-    "top-level timeline spacers should be visually capped",
+    state.timelineSpacers.every(hasUniformSpacerScale),
+    "top-level timeline spacers should use the uniform minute scale",
+    state,
+  );
+  assert(
+    state.timelineIdleBreaks.length === 0,
+    "top-level short gaps should not render idle breaks",
     state,
   );
   await page.close();
@@ -580,8 +601,13 @@ async function verifyRepeatedNestedTranscript(browser) {
     state,
   );
   assert(
-    state.timelineSpacers.every((spacer) => spacer.height <= 96),
-    "nested timeline spacers should be visually capped",
+    state.timelineSpacers.every(hasUniformSpacerScale),
+    "nested timeline spacers should use the uniform minute scale",
+    state,
+  );
+  assert(
+    state.timelineIdleBreaks.length === 0,
+    "nested short gaps should not render idle breaks",
     state,
   );
   await page.close();
@@ -686,12 +712,149 @@ async function verifyToolBodyIds(browser) {
   return expandedFromSidebar;
 }
 
+async function verifyLongMainIdleCollapse(browser) {
+  const page = await setupPage(browser);
+  const idleTranscript = {
+    task_part_id: "idle-task",
+    agent_type: "general",
+    summary: { id: "idle-session", title: "Idle transcript" },
+    messages: [
+      baseMessage(
+        [{ type: "text", text: "idle answer" }],
+        "stop",
+        "2026-06-18T03:01:00Z",
+      ),
+    ],
+    subagent_transcripts: [],
+  };
+
+  await runSyntheticSession(page, {
+    id: "long-main-idle",
+    messages: [
+      {
+        role: "user",
+        time_created: "2026-06-18T00:00:00Z",
+        parts: [{ type: "text", text: "start" }],
+      },
+      baseMessage(
+        [taskPart("idle-task", "idle-session", "after idle")],
+        "tool-calls",
+        "2026-06-18T03:00:00Z",
+      ),
+    ],
+    subagent_transcripts: [idleTranscript],
+  });
+
+  const state = await readIdentityState(page, ".message-item");
+  const nonMainLongSpacers = state.timelineSpacers.filter(
+    (spacer) => spacer.trackKind !== "main" && spacer.minutes >= 10,
+  );
+
+  assert(
+    state.timelineIdleBreaks.length === 1 &&
+      state.timelineIdleBreaks[0].trackKind === "main" &&
+      state.timelineIdleBreaks[0].minutes === 180,
+    "long main-agent idle should render as one main-track idle marker",
+    state,
+  );
+  assert(
+    nonMainLongSpacers.length === 0,
+    "long main-agent idle should not create long subagent leading spacers",
+    state,
+  );
+  assert(
+    state.timelineSpacers.every(hasUniformSpacerScale),
+    "active timeline spacers should keep the uniform minute scale after idle collapse",
+    state,
+  );
+  assert(
+    state.connectors.length === 1 &&
+      state.connectors[0].spawnPromptExists &&
+      state.connectors[0].firstMessageExists,
+    "idle collapse should preserve subagent connector anchors",
+    state,
+  );
+
+  await page.close();
+  return state;
+}
+
+async function verifySubagentElapsedDuringMainIdle(browser) {
+  const page = await setupPage(browser);
+  const backgroundTranscript = {
+    task_part_id: "background-task",
+    agent_type: "general",
+    summary: { id: "background-session", title: "Background transcript" },
+    messages: [
+      baseMessage(
+        [{ type: "text", text: "background first" }],
+        "tool-calls",
+        "2026-06-18T00:12:00Z",
+      ),
+      baseMessage(
+        [{ type: "text", text: "background second" }],
+        "stop",
+        "2026-06-18T00:15:00Z",
+      ),
+    ],
+    subagent_transcripts: [],
+  };
+
+  await runSyntheticSession(page, {
+    id: "background-during-main-idle",
+    messages: [
+      baseMessage(
+        [taskPart("background-task", "background-session", "background")],
+        "tool-calls",
+        "2026-06-18T00:00:00Z",
+      ),
+      baseMessage(
+        [{ type: "text", text: "main resumed" }],
+        "stop",
+        "2026-06-18T00:30:00Z",
+      ),
+    ],
+    subagent_transcripts: [backgroundTranscript],
+  });
+
+  const state = await readIdentityState(page, ".message-item");
+  const subagentSpacers = state.timelineSpacers.filter(
+    (spacer) => spacer.trackKind === "subagent",
+  );
+
+  assert(
+    state.timelineIdleBreaks.length === 1 &&
+      state.timelineIdleBreaks[0].trackKind === "main" &&
+      state.timelineIdleBreaks[0].minutes === 30,
+    "main idle should still render as one main-track idle marker",
+    state,
+  );
+  assert(
+    subagentSpacers.length === 2 &&
+      subagentSpacers.some((spacer) => spacer.minutes === 12) &&
+      subagentSpacers.some((spacer) => spacer.minutes === 3),
+    "subagent elapsed time during main idle should remain visible",
+    state,
+  );
+  assert(
+    subagentSpacers.every(hasUniformSpacerScale),
+    "subagent elapsed time during main idle should use the uniform minute scale",
+    state,
+  );
+
+  await page.close();
+  return state;
+}
+
 const browser = await chromium.launch({ headless: true });
 try {
   const results = {
     repeatedTopLevelTranscript: await verifyRepeatedTopLevelTranscript(browser),
     repeatedNestedTranscript: await verifyRepeatedNestedTranscript(browser),
     toolBodyIds: await verifyToolBodyIds(browser),
+    longMainIdleCollapse: await verifyLongMainIdleCollapse(browser),
+    subagentElapsedDuringMainIdle:
+      await verifySubagentElapsedDuringMainIdle(browser),
   };
   console.log(JSON.stringify({ ok: true, results }, null, 2));
 } catch (error) {

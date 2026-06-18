@@ -14,10 +14,9 @@ let sidebarNavigationLock = null;
 let selectedAgentId = "main";
 const expandedToolResults = new Set();
 const TIMELINE_PIXELS_PER_MINUTE = 14;
-const TIMELINE_LINEAR_MINUTES = 4;
-const TIMELINE_LOG_PIXELS = 8;
+const TIMELINE_IDLE_THRESHOLD_MINUTES = 10;
+const TIMELINE_IDLE_BREAK_PX = 36;
 const TIMELINE_MIN_SPACER_PX = 8;
-const TIMELINE_MAX_SPACER_PX = 96;
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -205,15 +204,76 @@ function getTimelineStartMs() {
 function getTimelineSpacerPx(deltaMs) {
   if (!deltaMs || deltaMs <= 0) return 0;
   const minutes = deltaMs / 60000;
-  const linearPixels =
-    Math.min(minutes, TIMELINE_LINEAR_MINUTES) * TIMELINE_PIXELS_PER_MINUTE;
-  const compressedPixels =
-    minutes > TIMELINE_LINEAR_MINUTES
-      ? Math.log1p(minutes - TIMELINE_LINEAR_MINUTES) * TIMELINE_LOG_PIXELS
-      : 0;
-  return Math.min(
-    TIMELINE_MAX_SPACER_PX,
-    Math.max(TIMELINE_MIN_SPACER_PX, linearPixels + compressedPixels),
+  return Math.max(TIMELINE_MIN_SPACER_PX, minutes * TIMELINE_PIXELS_PER_MINUTE);
+}
+
+function getTimelineIdleBreaks() {
+  const breaks = [];
+  const messages = SESSION_DATA?.messages || [];
+  let previousMs = getTimestampMs(messages[0]?.time_created);
+
+  messages.slice(1).forEach((msg) => {
+    const currentMs = getTimestampMs(msg.time_created);
+    if (previousMs !== null && currentMs !== null) {
+      const durationMs = currentMs - previousMs;
+      if (durationMs >= TIMELINE_IDLE_THRESHOLD_MINUTES * 60000) {
+        breaks.push({
+          startMs: previousMs,
+          endMs: currentMs,
+          durationMs,
+        });
+      }
+    }
+    if (currentMs !== null) previousMs = currentMs;
+  });
+
+  return breaks;
+}
+
+function getNormalizedTimelineMs(timeMs, idleBreaks = getTimelineIdleBreaks()) {
+  if (timeMs === null || timeMs === undefined) return null;
+  let normalizedMs = timeMs;
+
+  idleBreaks.forEach((idleBreak) => {
+    if (timeMs >= idleBreak.endMs) {
+      normalizedMs -= idleBreak.durationMs;
+    } else if (timeMs > idleBreak.startMs) {
+      normalizedMs -= timeMs - idleBreak.startMs;
+    }
+  });
+
+  return normalizedMs;
+}
+
+function getTrackTimelineMs(timeMs, trackStartMs, idleBreaks) {
+  if (timeMs === null || timeMs === undefined) return null;
+  if (trackStartMs === null || trackStartMs === undefined) {
+    return getNormalizedTimelineMs(timeMs, idleBreaks);
+  }
+  if (timeMs <= trackStartMs) {
+    return getNormalizedTimelineMs(timeMs, idleBreaks);
+  }
+
+  const visibleTrackStartMs = getNormalizedTimelineMs(trackStartMs, idleBreaks);
+  if (visibleTrackStartMs === null) {
+    return getNormalizedTimelineMs(timeMs, idleBreaks);
+  }
+
+  return visibleTrackStartMs + (timeMs - trackStartMs);
+}
+
+function getCrossedIdleBreaks(startMs, endMs, idleBreaks) {
+  if (
+    startMs === null ||
+    startMs === undefined ||
+    endMs === null ||
+    endMs === undefined
+  ) {
+    return [];
+  }
+
+  return idleBreaks.filter(
+    (idleBreak) => idleBreak.startMs >= startMs && idleBreak.endMs <= endMs,
   );
 }
 
@@ -1586,6 +1646,16 @@ function renderTimelineSpacer(deltaMs) {
     `;
 }
 
+function renderTimelineIdleBreak(idleBreak) {
+  const minutes = idleBreak.durationMs / 60000;
+
+  return `
+        <div class="timeline-idle-break" style="height:${TIMELINE_IDLE_BREAK_PX}px" data-idle-minutes="${minutes.toFixed(3)}">
+            <span>main idle ${formatTimelineOffset(minutes)}</span>
+        </div>
+    `;
+}
+
 function renderAgentMessage(msg, track, messageIndex) {
   const messageId = getAgentMessageDomId(track.id, messageIndex);
   const parentIndex =
@@ -1647,7 +1717,17 @@ function renderAgentMessage(msg, track, messageIndex) {
 function renderAgentTrack(track, activeSearch) {
   const subagents = track.subagents || [];
   const timelineStartMs = getTimelineStartMs();
-  let previousVisibleTimeMs = timelineStartMs;
+  const idleBreaks = getTimelineIdleBreaks();
+  const trackStartMs =
+    track.id === "main"
+      ? null
+      : (getTimestampMs(track.sourceTime) ??
+        getTimestampMs(track.messages?.[0]?.time_created));
+  let previousActualTimeMs = timelineStartMs;
+  let previousVisibleTimeMs = getNormalizedTimelineMs(
+    timelineStartMs,
+    idleBreaks,
+  );
   const visibleMessages = track.messages
     .map((msg, index) => {
       if (!shouldShowMessageInTranscriptList(msg, activeSearch, subagents)) {
@@ -1657,15 +1737,31 @@ function renderAgentTrack(track, activeSearch) {
       const fallbackTimeMs =
         index === 0
           ? (getTimestampMs(track.sourceTime) ?? previousVisibleTimeMs)
-          : previousVisibleTimeMs;
-      const currentTimeMs = getTimestampMs(msg.time_created) ?? fallbackTimeMs;
-      const spacer =
-        currentTimeMs !== null && previousVisibleTimeMs !== null
-          ? renderTimelineSpacer(currentTimeMs - previousVisibleTimeMs)
+          : previousActualTimeMs;
+      const currentActualTimeMs =
+        getTimestampMs(msg.time_created) ?? fallbackTimeMs;
+      const currentVisibleTimeMs =
+        track.id === "main"
+          ? getNormalizedTimelineMs(currentActualTimeMs, idleBreaks)
+          : getTrackTimelineMs(currentActualTimeMs, trackStartMs, idleBreaks);
+      const idleMarkers =
+        track.id === "main"
+          ? getCrossedIdleBreaks(
+              previousActualTimeMs,
+              currentActualTimeMs,
+              idleBreaks,
+            )
+              .map((idleBreak) => renderTimelineIdleBreak(idleBreak))
+              .join("")
           : "";
-      previousVisibleTimeMs = currentTimeMs ?? previousVisibleTimeMs;
+      const spacer =
+        currentVisibleTimeMs !== null && previousVisibleTimeMs !== null
+          ? renderTimelineSpacer(currentVisibleTimeMs - previousVisibleTimeMs)
+          : "";
+      previousActualTimeMs = currentActualTimeMs ?? previousActualTimeMs;
+      previousVisibleTimeMs = currentVisibleTimeMs ?? previousVisibleTimeMs;
 
-      return spacer + renderAgentMessage(msg, track, index);
+      return idleMarkers + spacer + renderAgentMessage(msg, track, index);
     })
     .join("");
   const active = track.id === selectedAgentId;
