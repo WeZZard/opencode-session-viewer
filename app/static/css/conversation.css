@@ -760,6 +760,113 @@ pre.tool-code code {
   border-top: 1px dashed var(--border-color);
 }
 
+.subagent-transcript {
+  margin-top: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+
+.subagent-transcript > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  cursor: pointer;
+  color: var(--text-primary);
+  list-style: none;
+}
+
+.subagent-transcript > summary::-webkit-details-marker {
+  display: none;
+}
+
+.subagent-transcript > summary::before {
+  content: "▸";
+  color: var(--text-tertiary);
+  font-size: 12px;
+  transition: transform 0.15s ease;
+}
+
+.subagent-transcript[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.subagent-summary-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.subagent-agent {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(15, 123, 108, 0.14);
+  color: var(--accent-green);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.subagent-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.subagent-count {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.subagent-transcript-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.subagent-message {
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.subagent-message.user {
+  border-left: 3px solid var(--accent-green);
+}
+
+.subagent-message.assistant {
+  border-left: 3px solid var(--accent-purple);
+}
+
+.subagent-message-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.subagent-message-body {
+  padding: 10px;
+}
+
+.subagent-empty {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  padding: 8px 0;
+}
+
 /* =============================================================================
    Right viz panel
    ============================================================================= */

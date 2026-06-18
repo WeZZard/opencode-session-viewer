@@ -142,6 +142,53 @@ function esc(text) {
   return div.innerHTML;
 }
 
+function getSubagentSessionId(part) {
+  return (
+    part?.state?.metadata?.sessionId || part?.state?.metadata?.session_id || ""
+  );
+}
+
+function getSubagentTranscriptForPart(
+  part,
+  subagents = SESSION_DATA?.subagent_transcripts || [],
+) {
+  const sessionId = getSubagentSessionId(part);
+  return (subagents || []).find((transcript) => {
+    return (
+      (part?.id && transcript.task_part_id === part.id) ||
+      (sessionId && transcript.summary?.id === sessionId)
+    );
+  });
+}
+
+function getMessageSubagentTranscripts(msg) {
+  const transcripts = [];
+  (msg.parts || []).forEach((part) => {
+    const transcript = getSubagentTranscriptForPart(part);
+    if (transcript) transcripts.push(transcript);
+  });
+  return transcripts;
+}
+
+function messageHasSubagentTranscript(msg) {
+  return getMessageSubagentTranscripts(msg).length > 0;
+}
+
+function getTranscriptText(transcript) {
+  let text = [
+    transcript.summary?.title || "",
+    transcript.summary?.id || "",
+    transcript.agent_type || "",
+  ].join(" ");
+
+  (transcript.messages || []).forEach((msg) => {
+    text +=
+      " " + getMessageSearchText(msg, transcript.subagent_transcripts || []);
+  });
+
+  return text;
+}
+
 // Determine if a message is a "thinking step" (agentic tool-calling loop message)
 // vs a final/substantive assistant response.
 // A thinking step is an assistant message that either:
@@ -164,19 +211,51 @@ function getPreview(msg) {
       ? firstPara.substring(0, 300) + "..."
       : firstPara;
   }
+  const taskPart = msg.parts?.find(
+    (p) => p.type === "tool" && p.tool === "task",
+  );
+  if (taskPart) {
+    const transcript = getSubagentTranscriptForPart(taskPart);
+    const state = taskPart.state || {};
+    const input = state.input || {};
+    const agent = input.subagent_type || transcript?.agent_type || "subagent";
+    const title =
+      transcript?.summary?.title || input.description || input.prompt;
+    if (title) return `Subagent (${agent}): ${title}`;
+  }
   const toolPart = msg.parts?.find((p) => p.type === "tool");
   if (toolPart) return `[${toolPart.tool}]`;
   return msg.summary?.title || "";
 }
 
-// Get full text content of a message for filtering
-function getFullText(msg) {
+function getMessageSearchText(
+  msg,
+  subagents = SESSION_DATA?.subagent_transcripts || [],
+) {
   let text = "";
   (msg.parts || []).forEach((p) => {
     if (p.type === "text" && p.text) {
       text += p.text + " ";
     }
+    if (p.type === "tool" && p.tool === "task") {
+      const state = p.state || {};
+      const input = state.input || {};
+      text += [input.description, input.prompt, state.output]
+        .filter(Boolean)
+        .join(" ");
+
+      const transcript = getSubagentTranscriptForPart(p, subagents);
+      if (transcript) {
+        text += " " + getTranscriptText(transcript);
+      }
+    }
   });
+  return text;
+}
+
+// Get full text content of a message for filtering
+function getFullText(msg) {
+  const text = getMessageSearchText(msg);
   return text.toLowerCase();
 }
 
@@ -199,10 +278,9 @@ function highlightText(text, query) {
 function getMatchSnippet(msg, query) {
   if (!query) return null;
 
-  const textPart = msg.parts?.find((p) => p.type === "text" && p.text);
-  if (!textPart?.text) return null;
+  const text = getMessageSearchText(msg).trim();
+  if (!text) return null;
 
-  const text = textPart.text;
   const lowerText = text.toLowerCase();
   const lowerQuery = query.toLowerCase();
   const matchIndex = lowerText.indexOf(lowerQuery);
@@ -548,11 +626,19 @@ function renderSidebar() {
     if (currentFilter !== "all" && m.role !== currentFilter) return false;
 
     // Hide thinking steps unless checkbox is checked
-    if (!showThinkingSteps && isThinkingStep(m)) return false;
+    if (
+      !showThinkingSteps &&
+      isThinkingStep(m) &&
+      !messageHasSubagentTranscript(m)
+    ) {
+      return false;
+    }
 
     const preview = getPreview(m);
     // Filter out bracketed previews like [bash], [edit], etc.
-    if (/^\[.*?\]$/.test(preview.trim())) return false;
+    if (/^\[.*?\]$/.test(preview.trim()) && !messageHasSubagentTranscript(m)) {
+      return false;
+    }
 
     if (activeSearch) {
       // Filter on full message text, not just preview
@@ -626,8 +712,76 @@ function clearFilter() {
   renderSidebar();
 }
 
+function transcriptMatchesQuery(transcript, query) {
+  if (!query) return false;
+  return getTranscriptText(transcript)
+    .toLowerCase()
+    .includes(query.toLowerCase());
+}
+
+function renderSubagentTranscript(transcript) {
+  const messages = transcript.messages || [];
+  const activeSearch = filterQuery || urlSearchQuery;
+  const isLinkedMatch = transcriptMatchesQuery(transcript, activeSearch);
+  const title =
+    transcript.summary?.title || transcript.summary?.id || "Subagent";
+  const agent =
+    transcript.agent_type || transcript.summary?.model || "subagent";
+  const openAttr = isLinkedMatch ? " open" : "";
+
+  const messagesHtml = messages
+    .map((msg, index) => renderSubagentMessage(msg, transcript, index))
+    .join("");
+
+  return `
+        <details class="subagent-transcript"${openAttr}>
+            <summary>
+                <span class="subagent-summary-main">
+                    <span class="subagent-agent">${esc(agent)}</span>
+                    <span class="subagent-title">${esc(title)}</span>
+                </span>
+                <span class="subagent-count">${messages.length} message${messages.length === 1 ? "" : "s"}</span>
+            </summary>
+            <div class="subagent-transcript-body">
+                ${messagesHtml || '<div class="subagent-empty">No transcript messages recorded.</div>'}
+            </div>
+        </details>
+    `;
+}
+
+function renderSubagentMessage(msg, transcript, index) {
+  return `
+        <div class="subagent-message ${msg.role}">
+            <div class="subagent-message-header">
+                <span class="role-badge ${msg.role}">${msg.role}</span>
+                <span class="message-meta">
+                    <span>${formatFullTime(msg.time_created)}</span>
+                    ${msg.modelID ? `<span>${esc(msg.modelID)}</span>` : ""}
+                    ${msg.agent ? `<span>${esc(msg.agent)}</span>` : ""}
+                </span>
+            </div>
+            <div class="subagent-message-body">
+                ${
+                  (msg.parts || [])
+                    .map((p) =>
+                      renderPart(p, {
+                        embedded: true,
+                        subagents: transcript.subagent_transcripts || [],
+                      }),
+                    )
+                    .join("") ||
+                  '<span style="color:var(--text-tertiary)">(no content)</span>'
+                }
+            </div>
+        </div>
+    `;
+}
+
 // Render part
-function renderPart(part) {
+function renderPart(part, context = {}) {
+  const availableSubagents =
+    context.subagents || SESSION_DATA?.subagent_transcripts || [];
+
   // Check for reasoning types
   const isReasoning =
     (part.type === "reasoning" && part.text) ||
@@ -648,7 +802,9 @@ function renderPart(part) {
       const st = part.state || {};
       const prompt = st.input?.prompt || st.input?.description || "";
       const result = st.output || "";
-      const subagent = st.input?.subagent_type || "task";
+      const transcript = getSubagentTranscriptForPart(part, availableSubagents);
+      const subagent =
+        st.input?.subagent_type || transcript?.agent_type || "task";
 
       label = `Subtask: ${subagent}`;
 
@@ -658,6 +814,7 @@ function renderPart(part) {
       content = `
                 <div class="subtask-prompt"><strong>Task:</strong> ${esc(prompt)}</div>
                 ${result ? `<div class="subtask-result">${DOMPurify.sanitize(marked.parse(resultText))}</div>` : ""}
+                ${transcript ? renderSubagentTranscript(transcript) : ""}
             `;
     }
 
@@ -774,8 +931,17 @@ function renderTimeline() {
   const timeline = document.getElementById("timeline");
   timeline.innerHTML = SESSION_DATA.messages
     .filter((m) => {
-      if (!showThinkingSteps && isThinkingStep(m)) return false;
-      return !/^\[.*?\]$/.test(getPreview(m).trim());
+      if (
+        !showThinkingSteps &&
+        isThinkingStep(m) &&
+        !messageHasSubagentTranscript(m)
+      ) {
+        return false;
+      }
+      return (
+        !/^\[.*?\]$/.test(getPreview(m).trim()) ||
+        messageHasSubagentTranscript(m)
+      );
     })
     .map((m, i) => {
       // We need to use the original index to keep links working
@@ -796,7 +962,7 @@ function renderTimeline() {
                         </button>
                     </div>
                     <div class="message-body">
-                        ${(m.parts || []).map((p) => renderPart(p)).join("") || '<span style="color:var(--text-tertiary)">(no content)</span>'}
+                        ${(m.parts || []).map((p) => renderPart(p, { subagents: SESSION_DATA.subagent_transcripts || [] })).join("") || '<span style="color:var(--text-tertiary)">(no content)</span>'}
                     </div>
                 </div>
             `;
@@ -835,10 +1001,12 @@ function updateStats() {
   const asst = SESSION_DATA.messages.filter(
     (m) => m.role === "assistant",
   ).length;
+  const subagents = SESSION_DATA.subagent_transcripts?.length || 0;
   document.getElementById("stats").innerHTML = `
         <span>${total} total</span>
         <span>${user} user</span>
         <span>${asst} assistant</span>
+        ${subagents ? `<span>${subagents} subagents</span>` : ""}
     `;
 }
 
