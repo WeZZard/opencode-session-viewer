@@ -288,6 +288,22 @@ async function readIdentityState(page, selector) {
             textOverflow: styles.textOverflow,
           };
         }),
+        separator: (() => {
+          const separator = document.querySelector(".agent-stream-separator");
+          if (!separator) return { exists: false };
+          const styles = window.getComputedStyle(separator);
+          return {
+            exists: true,
+            rect: rectOf(separator),
+            role: separator.getAttribute("role"),
+            ariaOrientation: separator.getAttribute("aria-orientation"),
+            ariaLabel: separator.getAttribute("aria-label"),
+            display: styles.display,
+            pointerEvents: styles.pointerEvents,
+            backgroundImage: styles.backgroundImage,
+            backgroundSize: styles.backgroundSize,
+          };
+        })(),
       },
       selectedAgentChips: Array.from(
         document.querySelectorAll(".selected-agent-chip"),
@@ -648,9 +664,31 @@ async function verifyAgentStreamPresentation(browser) {
   const rectCenter = (rect) => (rect.left + rect.right) / 2;
   const nearlyEqual = (left, right, tolerance = 1) =>
     Math.abs(left - right) <= tolerance;
+  const separatorShowsSplit = (state) => {
+    const separator = state.workspace.separator;
+    const rect = separator.rect;
+    const mainRect = state.workspace.mainContentRect;
+    const overlayRect = state.workspace.overlayRect;
+
+    return (
+      separator.exists &&
+      separator.role === "separator" &&
+      separator.ariaOrientation === "vertical" &&
+      separator.ariaLabel &&
+      separator.display !== "none" &&
+      separator.pointerEvents === "none" &&
+      rect.height > 100 &&
+      rect.left >= mainRect.right - 1 &&
+      rect.right <= overlayRect.left + 1 &&
+      rect.right > mainRect.right &&
+      separator.backgroundImage !== "none" &&
+      separator.backgroundSize.includes("2px")
+    );
+  };
   assert(
     initialState.workspace.mainStreamCount === 1 &&
       initialState.workspace.subagentPanelCount === 0 &&
+      !initialState.workspace.separator.exists &&
       nearlyEqual(
         rectCenter(initialState.workspace.mainRect),
         rectCenter(initialState.workspace.mainContentRect),
@@ -680,12 +718,13 @@ async function verifyAgentStreamPresentation(browser) {
       firstOpenState.workspace.panelTrackIds[0] === firstAgentId &&
       firstOpenState.workspace.mainContentRect.width <
         initialState.workspace.mainContentRect.width &&
+      separatorShowsSplit(firstOpenState) &&
       nearlyEqual(
         firstOpenState.workspace.panelRects[0].right,
         firstOpenState.workspace.overlayRect.right,
         1,
       ),
-    "first opened subagent should consume right-side layout space at the right edge",
+    "first opened subagent should consume right-side layout space with a visible split separator",
     { initialState, firstOpenState },
   );
 
@@ -699,10 +738,11 @@ async function verifyAgentStreamPresentation(browser) {
       openedState.workspace.openPanelCount === 2 &&
       openedState.workspace.overlayOpenPanelCount === 2 &&
       openedState.workspace.panelsInsideWorkspace === 0 &&
+      separatorShowsSplit(openedState) &&
       openedState.workspace.mainTrackIds[0] === "main" &&
       openedState.workspace.panelTrackIds.includes(firstAgentId) &&
       openedState.workspace.panelTrackIds.includes(secondAgentId),
-    "clicking multiple subagents should keep main stream and open right-side panels",
+    "clicking multiple subagents should keep main stream and separated open right-side panels",
     openedState,
   );
   assert(
@@ -806,9 +846,10 @@ async function verifyAgentStreamPresentation(browser) {
       manyPanelsState.workspace.openPanelCount === 8 &&
       manyPanelsState.workspace.overlayOpenPanelCount === 8 &&
       manyPanelsState.workspace.panelsInsideWorkspace === 0 &&
+      separatorShowsSplit(manyPanelsState) &&
       manyPanelsState.workspace.rackScrollWidth >
         manyPanelsState.workspace.rackClientWidth,
-    "opening many long-titled subagent panels should keep every panel mounted",
+    "opening many long-titled subagent panels should keep every panel mounted behind the split separator",
     manyPanelsState,
   );
   assert(

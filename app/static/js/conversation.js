@@ -2226,6 +2226,7 @@ function renderFloatingSubagentPanels(openSubagentTracks, activeSearch) {
     .map((track) => renderAgentTrack(track, activeSearch, { variant: "panel" }))
     .join("");
   overlay.innerHTML = `
+        <div class="agent-stream-separator" role="separator" aria-orientation="vertical" aria-label="Main agent and sub-agent panels split"></div>
         <div class="subagent-panel-rack" id="subagentPanelRack" aria-label="Open subagent panels">
             ${panelsHtml}
         </div>
