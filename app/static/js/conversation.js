@@ -147,8 +147,25 @@ function domId(value) {
   return String(value || "").replace(/[^A-Za-z0-9_-]/g, "-");
 }
 
-function getSubagentMessageDomId(parentIndex, transcriptId, subagentIndex) {
-  return `submsg-${domId(parentIndex)}-${domId(transcriptId)}-${subagentIndex}`;
+function getTranscriptKey(transcript) {
+  return transcript?.summary?.id || transcript?.task_part_id || "";
+}
+
+function getSubagentOccurrenceSegment(part, transcript, partIndex) {
+  const key =
+    getTranscriptKey(transcript) ||
+    getSubagentSessionId(part) ||
+    part?.id ||
+    "subagent";
+  return `p${partIndex}-${key}`;
+}
+
+function getSubagentOccurrencePath(parentIndex, pathSegments = []) {
+  return [`msg${parentIndex}`, ...pathSegments].map(domId).join("__");
+}
+
+function getSubagentMessageDomId(subagentPath, subagentIndex) {
+  return `submsg-${domId(subagentPath)}-${subagentIndex}`;
 }
 
 function stringifyValue(value) {
@@ -185,14 +202,25 @@ function getSubagentTranscriptForPart(
   });
 }
 
+function getMessageSubagentTranscriptRefs(
+  msg,
+  subagents = SESSION_DATA?.subagent_transcripts || [],
+) {
+  const refs = [];
+  (msg.parts || []).forEach((part, partIndex) => {
+    const transcript = getSubagentTranscriptForPart(part, subagents);
+    if (transcript) refs.push({ part, partIndex, transcript });
+  });
+  return refs;
+}
+
 function getMessageSubagentTranscripts(
   msg,
   subagents = SESSION_DATA?.subagent_transcripts || [],
 ) {
   const transcripts = [];
-  (msg.parts || []).forEach((part) => {
-    const transcript = getSubagentTranscriptForPart(part, subagents);
-    if (transcript) transcripts.push(transcript);
+  getMessageSubagentTranscriptRefs(msg, subagents).forEach(({ transcript }) => {
+    transcripts.push(transcript);
   });
   return transcripts;
 }
@@ -485,13 +513,19 @@ function setActiveSidebarMessage(idx) {
   });
 }
 
-function setActiveSidebarSubagent(transcriptId, subagentIndex, parentIndex) {
+function setActiveSidebarSubagent(
+  transcriptId,
+  subagentIndex,
+  parentIndex,
+  subagentPath,
+) {
   document.querySelectorAll(".message-item").forEach((item) => {
     item.classList.toggle(
       "active",
       item.dataset.subagentId === transcriptId &&
         Number(item.dataset.subagentIndex) === subagentIndex &&
-        Number(item.dataset.index) === parentIndex,
+        Number(item.dataset.index) === parentIndex &&
+        item.dataset.subagentPath === subagentPath,
     );
   });
 }
@@ -525,7 +559,12 @@ function scrollToMessage(idx) {
   }
 }
 
-function scrollToSubagentMessage(transcriptId, subagentIndex, parentIndex) {
+function scrollToSubagentMessage(
+  transcriptId,
+  subagentIndex,
+  parentIndex,
+  subagentPath,
+) {
   const parentEl = document.getElementById("msg-" + parentIndex);
   if (!parentEl) return;
 
@@ -534,21 +573,23 @@ function scrollToSubagentMessage(transcriptId, subagentIndex, parentIndex) {
     transcriptId,
     subagentIndex,
     parentIndex,
+    subagentPath,
   };
 
-  parentEl
-    .querySelectorAll(
-      `.subagent-transcript[data-transcript-id="${CSS.escape(transcriptId)}"]`,
-    )
-    .forEach((details) => {
-      details.open = true;
-    });
+  parentEl.querySelectorAll(".subagent-transcript").forEach((details) => {
+    const detailsPath = details.dataset.subagentPath;
+    const isTargetPath =
+      subagentPath &&
+      detailsPath &&
+      (subagentPath === detailsPath ||
+        subagentPath.startsWith(detailsPath + "__"));
+    const isFallbackTranscript =
+      !subagentPath && details.dataset.transcriptId === transcriptId;
+    if (isTargetPath || isFallbackTranscript) details.open = true;
+  });
 
   const childEl = parentEl.querySelector(
-    "#" +
-      CSS.escape(
-        getSubagentMessageDomId(parentIndex, transcriptId, subagentIndex),
-      ),
+    "#" + CSS.escape(getSubagentMessageDomId(subagentPath, subagentIndex)),
   );
   const targetEl = childEl || parentEl;
 
@@ -565,7 +606,12 @@ function scrollToSubagentMessage(transcriptId, subagentIndex, parentIndex) {
   targetEl.classList.add("highlighted");
   highlightedId = parentIndex;
 
-  setActiveSidebarSubagent(transcriptId, subagentIndex, parentIndex);
+  setActiveSidebarSubagent(
+    transcriptId,
+    subagentIndex,
+    parentIndex,
+    subagentPath,
+  );
 
   updateViz(parentIndex);
 
@@ -770,10 +816,10 @@ function renderSidebar() {
         ? "message-item subagent-entry"
         : "message-item";
       const clickHandler = isSubagent
-        ? "scrollToSubagentMessage(this.dataset.subagentId, Number(this.dataset.subagentIndex), Number(this.dataset.index))"
+        ? "scrollToSubagentMessage(this.dataset.subagentId, Number(this.dataset.subagentIndex), Number(this.dataset.index), this.dataset.subagentPath)"
         : `scrollToMessage(${item.index})`;
       const dataAttrs = isSubagent
-        ? `data-index="${item.parentIndex}" data-subagent-id="${esc(item.transcriptId)}" data-subagent-index="${item.subagentIndex}"`
+        ? `data-index="${item.parentIndex}" data-subagent-id="${esc(item.transcriptId)}" data-subagent-index="${item.subagentIndex}" data-subagent-path="${esc(item.subagentPath)}"`
         : `data-index="${item.index}"`;
 
       return `
@@ -870,9 +916,13 @@ function buildSidebarItems(activeSearch) {
       });
     }
 
-    getMessageSubagentTranscripts(msg, subagents).forEach((transcript) => {
-      collectSubagentSidebarItems(transcript, index, activeSearch, items);
-    });
+    getMessageSubagentTranscriptRefs(msg, subagents).forEach(
+      ({ part, partIndex, transcript }) => {
+        collectSubagentSidebarItems(transcript, index, activeSearch, items, [
+          getSubagentOccurrenceSegment(part, transcript, partIndex),
+        ]);
+      },
+    );
   });
 
   return items;
@@ -883,9 +933,11 @@ function collectSubagentSidebarItems(
   parentIndex,
   activeSearch,
   items,
+  pathSegments = [],
 ) {
   const subagents = transcript.subagent_transcripts || [];
   const transcriptId = transcript.summary?.id || "";
+  const subagentPath = getSubagentOccurrencePath(parentIndex, pathSegments);
   const context =
     transcript.summary?.title || transcript.agent_type || "Subagent transcript";
 
@@ -903,17 +955,25 @@ function collectSubagentSidebarItems(
       parentIndex,
       transcriptId,
       subagentIndex,
+      subagentPath,
       context,
     });
 
-    getMessageSubagentTranscripts(msg, subagents).forEach((childTranscript) => {
-      collectSubagentSidebarItems(
-        childTranscript,
-        parentIndex,
-        activeSearch,
-        items,
-      );
-    });
+    getMessageSubagentTranscriptRefs(msg, subagents).forEach(
+      ({ part, partIndex, transcript: childTranscript }) => {
+        collectSubagentSidebarItems(
+          childTranscript,
+          parentIndex,
+          activeSearch,
+          items,
+          [
+            ...pathSegments,
+            `msg${subagentIndex}`,
+            getSubagentOccurrenceSegment(part, childTranscript, partIndex),
+          ],
+        );
+      },
+    );
   });
 }
 
@@ -941,7 +1001,7 @@ function transcriptMatchesQuery(transcript, query) {
     .includes(query.toLowerCase());
 }
 
-function renderSubagentTranscript(transcript, parentIndex) {
+function renderSubagentTranscript(transcript, parentIndex, pathSegments = []) {
   const messages = transcript.messages || [];
   const activeSearch = filterQuery || urlSearchQuery;
   const isLinkedMatch = transcriptMatchesQuery(transcript, activeSearch);
@@ -951,15 +1011,16 @@ function renderSubagentTranscript(transcript, parentIndex) {
     transcript.agent_type || transcript.summary?.model || "subagent";
   const openAttr = isLinkedMatch ? " open" : "";
   const transcriptId = transcript.summary?.id || "";
+  const subagentPath = getSubagentOccurrencePath(parentIndex, pathSegments);
 
   const messagesHtml = messages
     .map((msg, index) =>
-      renderSubagentMessage(msg, transcript, index, parentIndex),
+      renderSubagentMessage(msg, transcript, index, parentIndex, pathSegments),
     )
     .join("");
 
   return `
-        <details class="subagent-transcript" data-transcript-id="${esc(transcriptId)}"${openAttr}>
+        <details class="subagent-transcript" data-transcript-id="${esc(transcriptId)}" data-subagent-path="${esc(subagentPath)}"${openAttr}>
             <summary>
                 <span class="subagent-summary-main">
                     <span class="subagent-agent">${esc(agent)}</span>
@@ -974,10 +1035,17 @@ function renderSubagentTranscript(transcript, parentIndex) {
     `;
 }
 
-function renderSubagentMessage(msg, transcript, index, parentIndex) {
+function renderSubagentMessage(
+  msg,
+  transcript,
+  index,
+  parentIndex,
+  pathSegments,
+) {
   const transcriptId = transcript.summary?.id || "";
+  const subagentPath = getSubagentOccurrencePath(parentIndex, pathSegments);
   return `
-        <div class="subagent-message ${msg.role}" id="${getSubagentMessageDomId(parentIndex, transcriptId, index)}" data-transcript-id="${esc(transcriptId)}" data-subagent-index="${index}" data-parent-index="${parentIndex}">
+        <div class="subagent-message ${msg.role}" id="${getSubagentMessageDomId(subagentPath, index)}" data-transcript-id="${esc(transcriptId)}" data-subagent-index="${index}" data-parent-index="${parentIndex}" data-subagent-path="${esc(subagentPath)}">
             <div class="subagent-message-header">
                 <span class="role-badge ${msg.role}">${msg.role}</span>
                 <span class="message-meta">
@@ -989,11 +1057,13 @@ function renderSubagentMessage(msg, transcript, index, parentIndex) {
             <div class="subagent-message-body">
                 ${
                   (msg.parts || [])
-                    .map((p) =>
+                    .map((p, partIndex) =>
                       renderPart(p, {
                         embedded: true,
                         subagents: transcript.subagent_transcripts || [],
                         parentIndex,
+                        partIndex,
+                        subagentPathSegments: [...pathSegments, `msg${index}`],
                       }),
                     )
                     .join("") ||
@@ -1038,10 +1108,20 @@ function renderPart(part, context = {}) {
       // Format subtask content
       const resultText =
         typeof result === "string" ? result : JSON.stringify(result, null, 2);
+      const subagentPathSegments = transcript
+        ? [
+            ...(context.subagentPathSegments || []),
+            getSubagentOccurrenceSegment(
+              part,
+              transcript,
+              context.partIndex || 0,
+            ),
+          ]
+        : context.subagentPathSegments || [];
       content = `
                 <div class="subtask-prompt"><strong>Task:</strong> ${esc(prompt)}</div>
                 ${result ? `<div class="subtask-result">${DOMPurify.sanitize(marked.parse(resultText))}</div>` : ""}
-                ${transcript ? renderSubagentTranscript(transcript, context.parentIndex) : ""}
+                ${transcript ? renderSubagentTranscript(transcript, context.parentIndex, subagentPathSegments) : ""}
             `;
     }
 
@@ -1193,7 +1273,7 @@ function renderTimeline() {
                         </button>
                     </div>
                     <div class="message-body">
-                        ${(m.parts || []).map((p) => renderPart(p, { subagents: SESSION_DATA.subagent_transcripts || [], parentIndex: originalIdx })).join("") || '<span style="color:var(--text-tertiary)">(no content)</span>'}
+                        ${(m.parts || []).map((p, partIndex) => renderPart(p, { subagents: SESSION_DATA.subagent_transcripts || [], parentIndex: originalIdx, partIndex, subagentPathSegments: [] })).join("") || '<span style="color:var(--text-tertiary)">(no content)</span>'}
                     </div>
                 </div>
             `;
