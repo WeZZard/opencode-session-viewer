@@ -11,6 +11,7 @@ let tokenData = [];
 let maxTokens = { input: 1, output: 1, cache: 1 };
 let currentMessageIndex = 0;
 let urlSearchQuery = ""; // Search query from URL (for highlighting)
+let scrollDetectionPausedUntil = 0;
 
 // Configure marked for GitHub Flavored Markdown
 marked.setOptions({
@@ -474,6 +475,8 @@ function toggleTool(id) {
 function scrollToMessage(idx) {
   const el = document.getElementById("msg-" + idx);
   if (el) {
+    scrollDetectionPausedUntil = Date.now() + 2500;
+
     if (highlightedId !== null) {
       document
         .getElementById("msg-" + highlightedId)
@@ -502,6 +505,8 @@ function scrollToMessage(idx) {
 function scrollToSubagentMessage(transcriptId, subagentIndex, parentIndex) {
   const parentEl = document.getElementById("msg-" + parentIndex);
   if (!parentEl) return;
+
+  scrollDetectionPausedUntil = Date.now() + 2500;
 
   parentEl
     .querySelectorAll(
@@ -547,6 +552,7 @@ function scrollToSubagentMessage(transcriptId, subagentIndex, parentIndex) {
 // Detect visible message on scroll
 function detectVisibleMessage() {
   if (!SESSION_DATA) return;
+  if (Date.now() < scrollDetectionPausedUntil) return;
 
   const mainContent = document.getElementById("mainContent");
   const scrollTop = mainContent.scrollTop;
