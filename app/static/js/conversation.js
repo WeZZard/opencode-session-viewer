@@ -18,6 +18,7 @@ let alignmentFrame = null;
 let streamHeightFrame = null;
 let sidebarAgentFilterScrollLeft = 0;
 let isSyncingAgentScroll = false;
+let suppressMainPanelSyncUntil = 0;
 let layoutResizeListenerBound = false;
 
 // Configure marked for GitHub Flavored Markdown
@@ -871,11 +872,17 @@ function scrollElementHorizontallyIntoContainer(el, container) {
   }
 }
 
-function scrollTranscriptElementIntoView(el, { block = "start" } = {}) {
+function scrollTranscriptElementIntoView(
+  el,
+  { block = "start", pauseMainPanelSync = false } = {},
+) {
   const panel = el.classList.contains("subagent-panel")
     ? el
     : el.closest(".subagent-panel");
   if (panel) {
+    if (pauseMainPanelSync) {
+      suppressMainPanelSyncUntil = Date.now() + 750;
+    }
     const rack = panel.closest(".subagent-panel-rack");
     if (rack) {
       scrollElementHorizontallyIntoContainer(panel, rack);
@@ -951,11 +958,15 @@ function scrollToAgentMessage(agentId, messageIndex) {
   );
   if (!el) return;
 
-  scrollToDomId(getAgentMessageDomId(agentId, messageIndex), {
-    kind: "agent-message",
-    agentId,
-    messageIndex,
-  });
+  scrollToDomId(
+    getAgentMessageDomId(agentId, messageIndex),
+    {
+      kind: "agent-message",
+      agentId,
+      messageIndex,
+    },
+    { pauseMainPanelSync: track.kind === "subagent" },
+  );
   highlightedId = track.id === "main" ? messageIndex : track.parentIndex;
   setActiveSidebarAgentMessage(agentId, messageIndex);
   updateViz(track.id === "main" ? messageIndex : track.parentIndex || 0);
@@ -1855,19 +1866,19 @@ function renderAgentConnector(track) {
   const firstMessageId = track.messages.length
     ? getAgentMessageDomId(track.id, 0)
     : "";
-  const prompt = compactText(track.spawnPrompt || "Task prompt", 140);
+  const promptText = track.spawnPrompt || "Task prompt";
 
   return `
-        <div class="agent-connector" data-source-agent-id="${escAttr(parentAgentId)}" data-source-message-id="${escAttr(sourceMessageId)}" data-spawn-prompt-id="${escAttr(spawnPromptId)}" data-first-message-id="${escAttr(firstMessageId)}" data-subagent-id="${escAttr(track.id)}">
-            <button type="button" class="agent-connector-node" onclick="scrollToAgentMessage('${escAttr(parentAgentId)}', ${track.sourceMessageIndex})">
+        <div class="agent-connector" aria-label="Pinned subagent relationship" data-source-agent-id="${escAttr(parentAgentId)}" data-source-message-id="${escAttr(sourceMessageId)}" data-spawn-prompt-id="${escAttr(spawnPromptId)}" data-first-message-id="${escAttr(firstMessageId)}" data-subagent-id="${escAttr(track.id)}">
+            <button type="button" class="agent-connector-node parent" onclick="scrollToAgentMessage('${escAttr(parentAgentId)}', ${track.sourceMessageIndex})">
                 <span class="agent-connector-label">parent message</span>
                 <span class="agent-connector-value">${track.sourceMessageIndex + 1}</span>
             </button>
-            <button type="button" class="agent-connector-node prompt" onclick="scrollToDomId('${escAttr(spawnPromptId)}', { kind: 'spawn-prompt', agentId: '${escAttr(track.id)}' })">
+            <button type="button" class="agent-connector-node prompt" title="${escAttr(promptText)}" onclick="scrollToDomId('${escAttr(spawnPromptId)}', { kind: 'spawn-prompt', agentId: '${escAttr(track.id)}' })">
                 <span class="agent-connector-label">spawn prompt</span>
-                <span class="agent-connector-value">${esc(prompt)}</span>
+                <span class="agent-connector-value">view</span>
             </button>
-            <button type="button" class="agent-connector-node" onclick="scrollToAgentMessage('${escAttr(track.id)}', 0)">
+            <button type="button" class="agent-connector-node first" onclick="scrollToAgentMessage('${escAttr(track.id)}', 0)">
                 <span class="agent-connector-label">first message</span>
                 <span class="agent-connector-value">${track.messages.length ? "1" : "none"}</span>
             </button>
@@ -1970,16 +1981,18 @@ function renderAgentTrack(track, activeSearch, options = {}) {
   return `
         <section class="${trackClasses}" id="agent-track-${domId(track.id)}" data-agent-id="${escAttr(track.id)}" data-track-kind="${escAttr(track.kind)}" data-panel-open="${isPanel ? "true" : "false"}">
             <div class="agent-track-header">
-                <div class="agent-track-heading">
-                    <div class="agent-track-kicker">${track.kind === "main" ? "main agent" : track.unlinked ? "unlinked subagent" : "subagent"}</div>
-                    <div class="agent-track-title">${esc(title)}</div>
-                    ${renderAgentConnector(track)}
+                <div class="agent-track-titlebar">
+                    <div class="agent-track-heading">
+                        <div class="agent-track-kicker">${track.kind === "main" ? "main agent" : track.unlinked ? "unlinked subagent" : "subagent"}</div>
+                    </div>
+                    <div class="agent-track-actions">
+                        ${track.kind === "subagent" && model ? `<div class="agent-track-model" data-track-model="${escAttr(model)}">${esc(model)}</div>` : ""}
+                        <div class="agent-track-meta">${track.messages.length} message${track.messages.length === 1 ? "" : "s"}</div>
+                        ${isPanel ? `<button type="button" class="agent-panel-close" aria-label="Close ${escAttr(title)}" onclick="closeSubagentPanel('${escAttr(track.id)}', event)">×</button>` : ""}
+                    </div>
                 </div>
-                <div class="agent-track-actions">
-                    ${track.kind === "subagent" && model ? `<div class="agent-track-model" data-track-model="${escAttr(model)}">${esc(model)}</div>` : ""}
-                    <div class="agent-track-meta">${track.messages.length} message${track.messages.length === 1 ? "" : "s"}</div>
-                    ${isPanel ? `<button type="button" class="agent-panel-close" aria-label="Close ${escAttr(title)}" onclick="closeSubagentPanel('${escAttr(track.id)}', event)">×</button>` : ""}
-                </div>
+                <div class="agent-track-title" title="${escAttr(title)}">${esc(title)}</div>
+                ${renderAgentConnector(track)}
             </div>
             <div class="agent-track-body">
                 ${visibleMessages ? renderAlignmentSpacer(track) + visibleMessages : '<div class="agent-track-empty">No messages match the current filters.</div>'}
@@ -2132,6 +2145,7 @@ function getSubagentPanelElements() {
 function syncSubagentPanelsToMain() {
   const mainContent = document.getElementById("mainContent");
   if (!mainContent || isSyncingAgentScroll) return;
+  if (Date.now() < suppressMainPanelSyncUntil) return;
 
   isSyncingAgentScroll = true;
   try {

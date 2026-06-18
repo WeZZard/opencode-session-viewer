@@ -579,12 +579,16 @@ body {
   position: sticky;
   top: 0;
   z-index: 1;
+  display: block;
+  padding: 8px 0 10px;
+  background: var(--bg-primary);
+}
+
+.agent-track-titlebar {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 0 10px;
-  background: var(--bg-primary);
 }
 
 .agent-track-heading {
@@ -614,6 +618,14 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.subagent-panel .agent-track-title {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
 
 .agent-track-actions {
@@ -698,11 +710,14 @@ body {
 
 .agent-connector {
   position: relative;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: center;
   gap: 6px;
-  margin: 8px 0 0;
-  padding: 0;
+  width: 100%;
+  margin: 10px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border-color);
 }
 
 .agent-connector::before {
@@ -712,16 +727,20 @@ body {
 .agent-connector-node {
   position: relative;
   z-index: 1;
-  flex: 1 1 92px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   min-width: 0;
-  max-width: 180px;
+  max-width: none;
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   color: var(--text-secondary);
-  padding: 5px 6px;
+  padding: 4px 6px;
   cursor: pointer;
   text-align: left;
+  white-space: nowrap;
+  justify-content: center;
 }
 
 .agent-connector-node:hover {
@@ -735,7 +754,7 @@ body {
 
 .agent-connector-label,
 .agent-connector-value {
-  display: block;
+  display: inline;
   min-width: 0;
 }
 
@@ -747,10 +766,12 @@ body {
 }
 
 .agent-connector-value {
-  margin-top: 3px;
+  margin-top: 0;
   font-size: 11px;
   line-height: 1.35;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* =============================================================================

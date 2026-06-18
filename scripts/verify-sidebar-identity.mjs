@@ -260,6 +260,10 @@ async function readIdentityState(page, selector) {
             subagentId: connector.dataset.subagentId || null,
             insideHeader: Boolean(header),
             insideBody: Boolean(connector.closest(".agent-track-body")),
+            connectorLeft: connectorRect?.left ?? null,
+            connectorRight: connectorRect?.right ?? null,
+            bodyLeft: bodyRect?.left ?? null,
+            bodyRight: bodyRect?.right ?? null,
             connectorBottom: connectorRect?.bottom ?? null,
             bodyTop: bodyRect?.top ?? null,
             firstMessageTop: firstRect?.top ?? null,
@@ -267,6 +271,21 @@ async function readIdentityState(page, selector) {
               connectorRect && firstRect
                 ? connectorRect.bottom > firstRect.top
                 : null,
+          };
+        }),
+        panelTitleMetrics: Array.from(
+          document.querySelectorAll(".subagent-panel .agent-track-title"),
+        ).map((title) => {
+          const track = title.closest(".agent-track");
+          const styles = window.getComputedStyle(title);
+          return {
+            agentId: track?.dataset.agentId || null,
+            text: title.textContent.replace(/\s+/g, " ").trim(),
+            clientWidth: title.clientWidth,
+            scrollWidth: title.scrollWidth,
+            whiteSpace: styles.whiteSpace,
+            overflowX: styles.overflowX,
+            textOverflow: styles.textOverflow,
           };
         }),
       },
@@ -712,9 +731,22 @@ async function verifyAgentStreamPresentation(browser) {
         (connector) =>
           connector.insideHeader &&
           !connector.insideBody &&
-          connector.connectorBottom <= connector.bodyTop + 1,
+          connector.connectorBottom <= connector.bodyTop + 1 &&
+          nearlyEqual(connector.connectorLeft, connector.bodyLeft, 1) &&
+          nearlyEqual(connector.connectorRight, connector.bodyRight, 1),
       ),
-    "subagent relationship controls should live in the header above the message body layout space",
+    "subagent relationship controls should be pinned in the header and span the stream body edges",
+    openedState,
+  );
+  assert(
+    openedState.workspace.panelTitleMetrics.length === 2 &&
+      openedState.workspace.panelTitleMetrics.every(
+        (title) =>
+          title.whiteSpace !== "nowrap" &&
+          title.textOverflow !== "ellipsis" &&
+          title.scrollWidth <= title.clientWidth + 1,
+      ),
+    "subagent panel titles should wrap instead of being visually truncated",
     openedState,
   );
   assert(
@@ -790,6 +822,17 @@ async function verifyAgentStreamPresentation(browser) {
   assert(
     manyPanelsState.workspace.panelWidths.every((width) => width <= 522),
     "every opened floating subagent panel should respect the maximum width",
+    manyPanelsState,
+  );
+  assert(
+    manyPanelsState.workspace.panelTitleMetrics.length === 8 &&
+      manyPanelsState.workspace.panelTitleMetrics.every(
+        (title) =>
+          title.whiteSpace !== "nowrap" &&
+          title.textOverflow !== "ellipsis" &&
+          title.scrollWidth <= title.clientWidth + 1,
+      ),
+    "long subagent panel titles should wrap without horizontal title overflow",
     manyPanelsState,
   );
 
